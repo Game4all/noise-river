@@ -1,27 +1,29 @@
 //! Extracts the binding information that the slang reflection json leaves out from a SPIR-V binary:
 //! storage image formats and access, depth textures, comparison samplers and which bindings each
-//! entry point actually uses.
+//! entry point actually uses. [`crate::ShaderReflection`] merges it into what the json says.
 
 use std::collections::{HashMap, HashSet};
 
 use spirv::{Decoration, ImageFormat, Op, StorageClass};
 
-/// `(descriptor set, binding)`
-pub type Slot = (u32, u32);
+use crate::{
+    error::SpirvError,
+    types::{Slot, StorageAccess, StorageFormat},
+};
 
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct SpirvBinding {
+pub(crate) struct SpirvBinding {
     pub is_storage_image: bool,
-    /// `None` for a storage image whose format is `Unknown` or has no wgpu equivalent.
-    pub storage_format: Option<wgpu::TextureFormat>,
-    pub storage_access: Option<wgpu::StorageTextureAccess>,
+    /// `None` for a storage image whose format is `Unknown` or isn't one of [`StorageFormat`].
+    pub storage_format: Option<StorageFormat>,
+    pub storage_access: Option<StorageAccess>,
     /// A sampled image that goes through a depth-compare sample.
     pub is_depth: bool,
     pub is_comparison: bool,
 }
 
 #[derive(Debug, Default)]
-pub struct SpirvInfo {
+pub(crate) struct SpirvInfo {
     pub bindings: HashMap<Slot, SpirvBinding>,
     /// Slots referenced by each entry point. Only reliable from SPIR-V 1.4 on, which is when
     /// entry point interfaces started listing every global variable that is used.
@@ -45,9 +47,18 @@ struct VarUse {
     writes: bool,
 }
 
-pub fn scan(words: &[u32]) -> Result<SpirvInfo, String> {
+/// Reads a SPIR-V binary as the little-endian words it is made of.
+pub fn words(bytes: &[u8]) -> Result<Vec<u32>, SpirvError> {
+    let (words, rest) = bytes.as_chunks::<4>();
+    if !rest.is_empty() {
+        return Err(SpirvError::Misaligned);
+    }
+    Ok(words.iter().copied().map(u32::from_le_bytes).collect())
+}
+
+pub(crate) fn scan(words: &[u32]) -> Result<SpirvInfo, SpirvError> {
     if words.len() < 5 || words[0] != spirv::MAGIC_NUMBER {
-        return Err("missing the SPIR-V magic number".into());
+        return Err(SpirvError::MissingMagic);
     }
 
     let mut set_of: HashMap<u32, u32> = HashMap::new();
@@ -64,7 +75,7 @@ pub fn scan(words: &[u32]) -> Result<SpirvInfo, String> {
     while at < words.len() {
         let count = (words[at] >> 16) as usize;
         if count == 0 || at + count > words.len() {
-            return Err(format!("malformed instruction at word {at}"));
+            return Err(SpirvError::MalformedInstruction { at });
         }
         let inst = &words[at..at + count];
         at += count;
@@ -75,7 +86,7 @@ pub fn scan(words: &[u32]) -> Result<SpirvInfo, String> {
         let arg = |n: usize| {
             inst.get(n)
                 .copied()
-                .ok_or_else(|| format!("truncated {op:?} instruction"))
+                .ok_or(SpirvError::Truncated { op })
         };
         let resolve = |origin: &HashMap<u32, u32>, id: u32| origin.get(&id).copied().unwrap_or(id);
 
@@ -185,11 +196,11 @@ pub fn scan(words: &[u32]) -> Result<SpirvInfo, String> {
                     binding.is_storage_image = true;
                     binding.storage_format = map_storage_format(format);
                     binding.storage_access = Some(match var_use {
-                        Some(u) if u.writes && !u.reads => wgpu::StorageTextureAccess::WriteOnly,
-                        Some(u) if u.reads && !u.writes => wgpu::StorageTextureAccess::ReadOnly,
+                        Some(u) if u.writes && !u.reads => StorageAccess::WriteOnly,
+                        Some(u) if u.reads && !u.writes => StorageAccess::ReadOnly,
                         // also when the image is only handed to a function we don't follow,
                         // read-write is the conservative choice
-                        _ => wgpu::StorageTextureAccess::ReadWrite,
+                        _ => StorageAccess::ReadWrite,
                     });
                 }
             }
@@ -208,22 +219,21 @@ pub fn scan(words: &[u32]) -> Result<SpirvInfo, String> {
 }
 
 /// Reads a nul-terminated string packed in words, returns it with the number of words it took.
-fn decode_string(words: &[u32]) -> Result<(String, usize), String> {
+fn decode_string(words: &[u32]) -> Result<(String, usize), SpirvError> {
     let mut bytes = Vec::new();
     for (i, word) in words.iter().enumerate() {
         for byte in word.to_le_bytes() {
             if byte == 0 {
-                let name = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-                return Ok((name, i + 1));
+                return Ok((String::from_utf8(bytes)?, i + 1));
             }
             bytes.push(byte);
         }
     }
-    Err("unterminated entry point name".into())
+    Err(SpirvError::UnterminatedName)
 }
 
-fn map_storage_format(format: ImageFormat) -> Option<wgpu::TextureFormat> {
-    use wgpu::TextureFormat as T;
+fn map_storage_format(format: ImageFormat) -> Option<StorageFormat> {
+    use StorageFormat as T;
     Some(match format {
         ImageFormat::Rgba32f => T::Rgba32Float,
         ImageFormat::Rgba16f => T::Rgba16Float,
@@ -273,15 +283,12 @@ fn map_storage_format(format: ImageFormat) -> Option<wgpu::TextureFormat> {
 mod tests {
     use super::*;
 
-    fn words(bytes: &[u8]) -> Vec<u32> {
-        bytes
-            .chunks_exact(4)
-            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
-            .collect()
+    fn load(bytes: &[u8]) -> SpirvInfo {
+        scan(&words(bytes).unwrap()).unwrap()
     }
 
     fn fill() -> SpirvInfo {
-        scan(&words(include_bytes!("testdata/fill.spv"))).unwrap()
+        load(include_bytes!("../testdata/fill.spv"))
     }
 
     #[test]
@@ -289,9 +296,9 @@ mod tests {
         let info = fill();
         let target = &info.bindings[&(1, 1)];
         assert!(target.is_storage_image);
-        assert_eq!(target.storage_format, Some(wgpu::TextureFormat::Rgba16Float));
+        assert_eq!(target.storage_format, Some(StorageFormat::Rgba16Float));
         // the shader only writes to it, slang doesn't decorate that
-        assert_eq!(target.storage_access, Some(wgpu::StorageTextureAccess::WriteOnly));
+        assert_eq!(target.storage_access, Some(StorageAccess::WriteOnly));
     }
 
     #[test]
@@ -314,16 +321,23 @@ mod tests {
 
     #[test]
     fn loose_globals_end_up_in_an_undescribed_uniform_buffer() {
-        let info = scan(&words(include_bytes!("testdata/globals.spv"))).unwrap();
+        let info = load(include_bytes!("../testdata/globals.spv"));
         assert_eq!(info.uniform_buffers, HashSet::from([(0, 0)]));
         assert!(info.entry_usage["csMain"].contains(&(0, 0)));
     }
 
     #[test]
     fn rejects_garbage() {
-        assert!(scan(&[1, 2, 3]).is_err());
-        assert!(scan(&[0xdead_beef, 0, 0, 0, 0]).is_err());
+        assert!(matches!(words(&[0; 3]), Err(SpirvError::Misaligned)));
+        assert!(matches!(scan(&[1, 2, 3]), Err(SpirvError::MissingMagic)));
+        assert!(matches!(
+            scan(&[0xdead_beef, 0, 0, 0, 0]),
+            Err(SpirvError::MissingMagic)
+        ));
         // an instruction that claims to be longer than the module
-        assert!(scan(&[spirv::MAGIC_NUMBER, 0, 0, 0, 0, 5 << 16]).is_err());
+        assert!(matches!(
+            scan(&[spirv::MAGIC_NUMBER, 0, 0, 0, 0, 5 << 16]),
+            Err(SpirvError::MalformedInstruction { at: 5 })
+        ));
     }
 }

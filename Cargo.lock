@@ -1355,9 +1355,8 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "pollster",
- "serde",
- "serde_json",
- "spirv",
+ "slang-shady",
+ "thiserror 2.0.21",
  "wgpu",
  "winit",
 ]
@@ -2207,6 +2206,16 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "slang-shady"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "spirv",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "slotmap"

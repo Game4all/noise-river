@@ -1,6 +1,6 @@
 //! Loads slang shaders that were precompiled to SPIR-V and builds render and compute pipelines out
 //! of them, taking the bind group layouts and the pipeline layout from the reflection json that
-//! slangc writes next to each binary.
+//! slangc writes next to each binary, and from the binary itself.
 //!
 //! Every shader module is a `<name>.spv` and `<name>.json` pair in the shader directory:
 //! `slangc <name>.slang -target spirv -profile spirv_1_5 -emit-spirv-directly -fvk-use-entrypoint-name
@@ -11,24 +11,24 @@
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet, btree_map::Entry},
+    collections::{BTreeMap, HashMap, btree_map::Entry},
     fs,
     path::PathBuf,
     sync::Arc,
 };
 
-use super::{
-    error::PipelineError,
-    reflection::{self, ModuleReflection, ReflectedEntryPoint},
-    spirv_scan::{self, Slot, SpirvInfo},
+use slang_shady::{
+    EntryPoint, ShaderReflection, Slot,
+    types::ShaderStage,
 };
+
+use super::{convert, error::PipelineError};
 
 /// A shader module loaded by [`PipelineManager::load_module`].
 pub struct ShaderModule {
     pub name: String,
     pub module: wgpu::ShaderModule,
-    pub reflection: ModuleReflection,
-    spirv: SpirvInfo,
+    pub reflection: ShaderReflection,
 }
 
 /// An entry point of a shader module, by the name of the module (its file name without extension).
@@ -135,31 +135,17 @@ impl PipelineManager {
             path: spv_path.clone(),
             source,
         })?;
-        if bytes.len() % 4 != 0 {
-            return Err(PipelineError::InvalidSpirv {
-                path: spv_path,
-                reason: "size is not a multiple of 4 bytes".into(),
-            });
-        }
-        let words: Vec<u32> = bytes
-            .chunks_exact(4)
-            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
-            .collect();
-        let spirv = spirv_scan::scan(&words).map_err(|reason| PipelineError::InvalidSpirv {
-            path: spv_path.clone(),
-            reason,
-        })?;
+        let invalid = |source: slang_shady::ReflectionError| PipelineError::Reflection {
+            module: name.to_owned(),
+            source,
+        };
+        let words = slang_shady::spirv_words(&bytes).map_err(|e| invalid(e.into()))?;
 
         let json = fs::read_to_string(&json_path).map_err(|source| PipelineError::Io {
             path: json_path.clone(),
             source,
         })?;
-        let reflection = reflection::parse(&json)
-            .map_err(|source| PipelineError::Json {
-                path: json_path,
-                source,
-            })?
-            .flatten()?;
+        let reflection = ShaderReflection::from_sources(&json, Some(&words)).map_err(invalid)?;
 
         let entry_points: Vec<_> = reflection
             .entry_points
@@ -175,7 +161,8 @@ impl PipelineManager {
             .collect();
 
         // SAFETY: passthrough modules skip wgpu's validation, so the binary is handed to the driver
-        // as is. It comes from slangc and was checked to be well formed SPIR-V by the scan above, and
+        // as is. It comes from slangc and was checked to be well formed SPIR-V by the scan in
+        // `ShaderReflection::from_sources`, and
         // every pipeline layout is built from the reflection of that same binary.
         let module = unsafe {
             device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
@@ -190,7 +177,6 @@ impl PipelineManager {
             name: name.to_owned(),
             module,
             reflection,
-            spirv,
         });
         self.modules.insert(name.to_owned(), module.clone());
         Ok(module)
@@ -210,25 +196,25 @@ impl PipelineManager {
         let vertex_entry = entry_point(
             &vertex_module,
             desc.vertex.entry_point,
-            wgpu::ShaderStages::VERTEX,
+            ShaderStage::Vertex,
             "vertex",
         )?;
         let mut stages = vec![StageUse {
             module: &vertex_module,
             entry: desc.vertex.entry_point,
-            stage: wgpu::ShaderStages::VERTEX,
+            stage: ShaderStage::Vertex,
         }];
         if let (Some(module), Some(fragment)) = (&fragment_module, desc.fragment) {
             entry_point(
                 module,
                 fragment.entry_point,
-                wgpu::ShaderStages::FRAGMENT,
+                ShaderStage::Fragment,
                 "fragment",
             )?;
             stages.push(StageUse {
                 module,
                 entry: fragment.entry_point,
-                stage: wgpu::ShaderStages::FRAGMENT,
+                stage: ShaderStage::Fragment,
             });
         }
 
@@ -284,7 +270,7 @@ impl PipelineManager {
         let entry = entry_point(
             &module,
             desc.shader.entry_point,
-            wgpu::ShaderStages::COMPUTE,
+            ShaderStage::Compute,
             "compute",
         )?;
         let workgroup_size = entry.workgroup_size;
@@ -292,7 +278,7 @@ impl PipelineManager {
         let stages = [StageUse {
             module: &module,
             entry: desc.shader.entry_point,
-            stage: wgpu::ShaderStages::COMPUTE,
+            stage: ShaderStage::Compute,
         }];
         let layout = build_layout(device, desc.label, &stages, desc.binding_overrides)?;
 
@@ -325,9 +311,9 @@ impl PipelineManager {
 fn entry_point<'m>(
     module: &'m ShaderModule,
     entry: &str,
-    stage: wgpu::ShaderStages,
+    stage: ShaderStage,
     stage_name: &'static str,
-) -> Result<&'m ReflectedEntryPoint, PipelineError> {
+) -> Result<&'m EntryPoint, PipelineError> {
     let reflected = module
         .reflection
         .entry_points
@@ -336,7 +322,7 @@ fn entry_point<'m>(
             module: module.name.clone(),
             entry: entry.to_owned(),
         })?;
-    if reflected.stage != stage {
+    if reflected.stage != Some(stage) {
         return Err(PipelineError::WrongStage {
             module: module.name.clone(),
             entry: entry.to_owned(),
@@ -347,18 +333,19 @@ fn entry_point<'m>(
 }
 
 /// One interleaved buffer: attributes are already sorted by location, so this only has to pack them.
-fn packed_vertex_attributes(entry: &ReflectedEntryPoint) -> (Vec<wgpu::VertexAttribute>, u64) {
+fn packed_vertex_attributes(entry: &EntryPoint) -> (Vec<wgpu::VertexAttribute>, u64) {
     let mut offset = 0;
     let attributes = entry
         .vertex_inputs
         .iter()
         .map(|input| {
+            let format = convert::vertex_format(input.format);
             let attribute = wgpu::VertexAttribute {
-                format: input.format,
+                format,
                 offset,
                 shader_location: input.location,
             };
-            offset += input.format.size();
+            offset += format.size();
             attribute
         })
         .collect();
@@ -368,7 +355,7 @@ fn packed_vertex_attributes(entry: &ReflectedEntryPoint) -> (Vec<wgpu::VertexAtt
 struct StageUse<'a> {
     module: &'a ShaderModule,
     entry: &'a str,
-    stage: wgpu::ShaderStages,
+    stage: ShaderStage,
 }
 
 /// A binding as one stage sees it, before the stages get merged.
@@ -388,9 +375,6 @@ struct Merged {
     visibility: wgpu::ShaderStages,
 }
 
-/// The name slang gives to the implicit uniform buffer for loose `uniform` globals.
-const GLOBALS_NAME: &str = "$Globals";
-
 fn build_layout(
     device: &wgpu::Device,
     label: &str,
@@ -402,7 +386,7 @@ fn build_layout(
     let mut all_stages = wgpu::ShaderStages::empty();
 
     for stage in stages {
-        all_stages |= stage.stage;
+        all_stages |= convert::shader_stage(stage.stage);
         immediate_size = immediate_size.max(stage.module.reflection.immediate_size);
         collect_candidates(stage, overrides, &mut candidates)?;
     }
@@ -537,103 +521,33 @@ fn collect_candidates(
     out: &mut Vec<Candidate>,
 ) -> Result<(), PipelineError> {
     let module = stage.module;
-    let usage = module.spirv.entry_usage.get(stage.entry);
-    let is_used = |slot: &Slot| usage.is_some_and(|slots| slots.contains(slot));
+    let entry = &module.reflection.entry_points[stage.entry];
 
     for binding in &module.reflection.bindings {
-        let slot = (binding.set, binding.binding);
         out.push(Candidate {
-            slot,
+            slot: binding.slot(),
             name: binding.name.clone(),
-            ty: resolve_binding_type(binding, &module.spirv, overrides)?,
+            ty: resolve_binding_type(binding, overrides)?,
             count: binding.count,
-            used: is_used(&slot),
-            stage: stage.stage,
+            used: entry.uses(binding.slot()).unwrap_or(false),
+            stage: convert::shader_stage(stage.stage),
         });
-    }
-
-    if module.reflection.has_global_uniforms {
-        // The one uniform buffer that reflection doesn't describe is the one for the loose globals.
-        let described: HashSet<Slot> = module
-            .reflection
-            .bindings
-            .iter()
-            .map(|b| (b.set, b.binding))
-            .collect();
-        let mut undescribed = module
-            .spirv
-            .uniform_buffers
-            .iter()
-            .filter(|slot| !described.contains(slot));
-        // no such buffer means that every global was optimized out
-        if let Some(&slot) = undescribed.next() {
-            if undescribed.next().is_some() {
-                return Err(PipelineError::UnsupportedType {
-                    name: GLOBALS_NAME.into(),
-                    detail: format!(
-                        "can't tell which uniform buffer of `{}` holds the loose globals, \
-                         wrap them in a ConstantBuffer or a ParameterBlock",
-                        module.name
-                    ),
-                });
-            }
-            out.push(Candidate {
-                slot,
-                name: GLOBALS_NAME.into(),
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-                used: is_used(&slot),
-                stage: stage.stage,
-            });
-        }
     }
     Ok(())
 }
 
-/// Starts from what the json says, then fills in what only the SPIR-V knows, then applies overrides.
+/// Starts from what reflection says, then applies overrides.
 fn resolve_binding_type(
-    binding: &reflection::ReflectedBinding,
-    spirv: &SpirvInfo,
+    binding: &slang_shady::Binding,
     overrides: BindingOverrides,
 ) -> Result<wgpu::BindingType, PipelineError> {
-    use wgpu::{BindingType, SamplerBindingType, TextureSampleType};
-
     if let Some((_, ty)) = overrides.iter().find(|(name, _)| *name == binding.name) {
         return Ok(*ty);
     }
-
-    let info = spirv.bindings.get(&(binding.set, binding.binding));
-    let missing = |reason: &str| PipelineError::MissingOverride {
+    convert::binding_type(binding.kind).map_err(|reason| PipelineError::MissingOverride {
         name: binding.name.clone(),
         reason: reason.into(),
-    };
-
-    let mut ty = binding.ty;
-    match &mut ty {
-        BindingType::StorageTexture { access, format, .. } if binding.needs_storage_format => {
-            let info = info
-                .filter(|info| info.is_storage_image)
-                .ok_or_else(|| missing("it's unused, so the compiler removed it from the binary"))?;
-            *format = info.storage_format.ok_or_else(|| {
-                missing("its image format is unknown, declare it with [[vk::image_format(\"...\")]]")
-            })?;
-            *access = info
-                .storage_access
-                .unwrap_or(wgpu::StorageTextureAccess::ReadWrite);
-        }
-        BindingType::Texture { sample_type, .. } if info.is_some_and(|info| info.is_depth) => {
-            *sample_type = TextureSampleType::Depth;
-        }
-        BindingType::Sampler(kind) if info.is_some_and(|info| info.is_comparison) => {
-            *kind = SamplerBindingType::Comparison;
-        }
-        _ => {}
-    }
-    Ok(ty)
+    })
 }
 
 /// The device feature that a resource array of this type needs.
@@ -680,7 +594,7 @@ mod tests {
     }
 
     fn manager() -> PipelineManager {
-        PipelineManager::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/gfx/testdata"))
+        PipelineManager::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../slang-shady/testdata"))
     }
 
     fn render_desc<'a>(vertex: ShaderRef<'a>, fragment: Option<ShaderRef<'a>>) -> RenderPipelineDesc<'a> {
@@ -878,7 +792,7 @@ mod tests {
             .unwrap();
         let layout = &manager.compute_pipeline(id).layout;
 
-        assert_eq!(layout.binding(GLOBALS_NAME), Some((0, 0)));
+        assert_eq!(layout.binding(slang_shady::GLOBALS_NAME), Some((0, 0)));
         assert_eq!(layout.binding("res.b"), Some((0, 4)));
     }
 

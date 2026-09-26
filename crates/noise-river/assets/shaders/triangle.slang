@@ -4,7 +4,6 @@ struct Push
 };
 [[vk::push_constant]] ConstantBuffer<Push> push;
 
-// no vertex buffer, the vertices are picked by their index
 static const float2 positions[3] = {
     float2(0.0, 0.8),
     float2(-0.8, -0.6),
