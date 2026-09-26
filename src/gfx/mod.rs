@@ -1,8 +1,24 @@
 use std::sync::Arc;
 
+mod error;
+mod pipeline;
+mod reflection;
+mod spirv_scan;
+
+#[allow(unused_imports)]
+pub use error::PipelineError;
+pub use pipeline::*;
+
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use wgpu::InstanceFlags;
 use winit::window::Window;
+
+/// Get a PathBuf to the dir containing pre-compiled SPIR-V shaders along with their reflection metadata.
+fn compiled_shader_dir() -> std::path::PathBuf {
+    std::env::current_exe()
+        .expect("Failed to locate the executable")
+        .with_file_name("shaders")
+}
 
 /// Holds the wgpu resources (Device, Queue, Surface) and manages the swapchain.
 #[allow(dead_code)]
@@ -13,6 +29,8 @@ pub struct GfxContext {
     pub queue: wgpu::Queue,
     pub surface_config: wgpu::SurfaceConfiguration,
     pub surface: wgpu::Surface<'static>,
+    /// Precompiled slang shaders and the pipelines built from them.
+    pub pipelines: PipelineManager,
 }
 
 impl GfxContext {
@@ -38,9 +56,23 @@ impl GfxContext {
         }))
         .expect("Failed to find a GPU adapter");
 
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("Failed to create the GPU device and queue");
+        // shaders are precompiled slang SPIR-V that goes straight to the driver, and their push
+        // constants are wgpu immediates
+        let required_features = wgpu::Features::PASSTHROUGH_SHADERS
+            | wgpu::Features::IMMEDIATES
+            | wgpu::Features::TEXTURE_BINDING_ARRAY
+            | wgpu::Features::BUFFER_BINDING_ARRAY
+            | wgpu::Features::STORAGE_RESOURCE_BINDING_ARRAY;
+
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: required_features,
+            required_limits: wgpu::Limits {
+                max_immediate_size: adapter.limits().max_immediate_size.min(128),
+                ..wgpu::Limits::default()
+            },
+            ..Default::default()
+        }))
+        .expect("Failed to create the GPU device and queue");
 
         let mut surface_config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -63,6 +95,7 @@ impl GfxContext {
             queue,
             surface_config,
             surface,
+            pipelines: PipelineManager::new(compiled_shader_dir()),
         }
     }
 

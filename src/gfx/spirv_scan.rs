@@ -1,0 +1,329 @@
+//! Extracts the binding information that the slang reflection json leaves out from a SPIR-V binary:
+//! storage image formats and access, depth textures, comparison samplers and which bindings each
+//! entry point actually uses.
+
+use std::collections::{HashMap, HashSet};
+
+use spirv::{Decoration, ImageFormat, Op, StorageClass};
+
+/// `(descriptor set, binding)`
+pub type Slot = (u32, u32);
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct SpirvBinding {
+    pub is_storage_image: bool,
+    /// `None` for a storage image whose format is `Unknown` or has no wgpu equivalent.
+    pub storage_format: Option<wgpu::TextureFormat>,
+    pub storage_access: Option<wgpu::StorageTextureAccess>,
+    /// A sampled image that goes through a depth-compare sample.
+    pub is_depth: bool,
+    pub is_comparison: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct SpirvInfo {
+    pub bindings: HashMap<Slot, SpirvBinding>,
+    /// Slots referenced by each entry point. Only reliable from SPIR-V 1.4 on, which is when
+    /// entry point interfaces started listing every global variable that is used.
+    pub entry_usage: HashMap<String, HashSet<Slot>>,
+    /// Slots of uniform buffers, which includes the implicit buffer slang makes for loose global
+    /// uniforms. That one is the only buffer that the reflection json doesn't describe.
+    pub uniform_buffers: HashSet<Slot>,
+}
+
+enum Ty {
+    Image { format: ImageFormat, storage: bool },
+    Sampler,
+    Array(u32),
+    Pointer(u32),
+}
+
+#[derive(Default)]
+struct VarUse {
+    comparison: bool,
+    reads: bool,
+    writes: bool,
+}
+
+pub fn scan(words: &[u32]) -> Result<SpirvInfo, String> {
+    if words.len() < 5 || words[0] != spirv::MAGIC_NUMBER {
+        return Err("missing the SPIR-V magic number".into());
+    }
+
+    let mut set_of: HashMap<u32, u32> = HashMap::new();
+    let mut binding_of: HashMap<u32, u32> = HashMap::new();
+    let mut types: HashMap<u32, Ty> = HashMap::new();
+    let mut variables: Vec<(u32, u32, StorageClass)> = Vec::new();
+    // Ids of pointers and loaded values, mapped back to the global variable they come from.
+    let mut origin: HashMap<u32, u32> = HashMap::new();
+    let mut sampled_images: HashMap<u32, (u32, u32)> = HashMap::new();
+    let mut usage: HashMap<u32, VarUse> = HashMap::new();
+    let mut entries: Vec<(String, Vec<u32>)> = Vec::new();
+
+    let mut at = 5;
+    while at < words.len() {
+        let count = (words[at] >> 16) as usize;
+        if count == 0 || at + count > words.len() {
+            return Err(format!("malformed instruction at word {at}"));
+        }
+        let inst = &words[at..at + count];
+        at += count;
+
+        let Some(op) = Op::from_u32(inst[0] & 0xFFFF) else {
+            continue;
+        };
+        let arg = |n: usize| {
+            inst.get(n)
+                .copied()
+                .ok_or_else(|| format!("truncated {op:?} instruction"))
+        };
+        let resolve = |origin: &HashMap<u32, u32>, id: u32| origin.get(&id).copied().unwrap_or(id);
+
+        match op {
+            Op::Decorate => match Decoration::from_u32(arg(2)?) {
+                Some(Decoration::DescriptorSet) => {
+                    set_of.insert(arg(1)?, arg(3)?);
+                }
+                Some(Decoration::Binding) => {
+                    binding_of.insert(arg(1)?, arg(3)?);
+                }
+                _ => {}
+            },
+            Op::TypeImage => {
+                let format = ImageFormat::from_u32(arg(8)?).unwrap_or(ImageFormat::Unknown);
+                // the `Sampled` operand is 2 for storage images
+                types.insert(
+                    arg(1)?,
+                    Ty::Image {
+                        format,
+                        storage: arg(7)? == 2,
+                    },
+                );
+            }
+            Op::TypeSampler => {
+                types.insert(arg(1)?, Ty::Sampler);
+            }
+            Op::TypeArray | Op::TypeRuntimeArray => {
+                types.insert(arg(1)?, Ty::Array(arg(2)?));
+            }
+            Op::TypePointer => {
+                types.insert(arg(1)?, Ty::Pointer(arg(3)?));
+            }
+            Op::Variable => {
+                if let Some(
+                    class @ (StorageClass::UniformConstant
+                    | StorageClass::Uniform
+                    | StorageClass::StorageBuffer),
+                ) = StorageClass::from_u32(arg(3)?)
+                {
+                    variables.push((arg(2)?, arg(1)?, class));
+                }
+            }
+            Op::Load | Op::AccessChain | Op::InBoundsAccessChain => {
+                let source = resolve(&origin, arg(3)?);
+                origin.insert(arg(2)?, source);
+            }
+            Op::SampledImage => {
+                let image = resolve(&origin, arg(3)?);
+                let sampler = resolve(&origin, arg(4)?);
+                sampled_images.insert(arg(2)?, (image, sampler));
+            }
+            Op::ImageSampleDrefImplicitLod
+            | Op::ImageSampleDrefExplicitLod
+            | Op::ImageDrefGather
+            | Op::ImageSparseSampleDrefImplicitLod
+            | Op::ImageSparseSampleDrefExplicitLod
+            | Op::ImageSparseDrefGather => {
+                if let Some(&(image, sampler)) = sampled_images.get(&arg(3)?) {
+                    usage.entry(image).or_default().comparison = true;
+                    usage.entry(sampler).or_default().comparison = true;
+                }
+            }
+            Op::ImageRead | Op::ImageSparseRead => {
+                usage.entry(resolve(&origin, arg(3)?)).or_default().reads = true;
+            }
+            Op::ImageWrite => {
+                usage.entry(resolve(&origin, arg(1)?)).or_default().writes = true;
+            }
+            Op::ImageTexelPointer => {
+                let var = usage.entry(resolve(&origin, arg(3)?)).or_default();
+                var.reads = true;
+                var.writes = true;
+            }
+            Op::EntryPoint => {
+                let (name, next) = decode_string(&inst[3..])?;
+                entries.push((name, inst[3 + next..].to_vec()));
+            }
+            _ => {}
+        }
+    }
+
+    let slot_of = |id: u32| Some((*set_of.get(&id)?, *binding_of.get(&id)?));
+
+    let mut info = SpirvInfo::default();
+    for (var, pointer_ty, class) in variables {
+        let Some(slot) = slot_of(var) else { continue };
+
+        let mut ty = match types.get(&pointer_ty) {
+            Some(Ty::Pointer(pointee)) => types.get(pointee),
+            _ => None,
+        };
+        while let Some(Ty::Array(element)) = ty {
+            ty = types.get(element);
+        }
+
+        if class == StorageClass::Uniform {
+            info.uniform_buffers.insert(slot);
+        }
+
+        let var_use = usage.get(&var);
+        let mut binding = SpirvBinding::default();
+        match ty {
+            Some(&Ty::Image { format, storage }) => {
+                binding.is_depth = var_use.is_some_and(|u| u.comparison);
+                if storage {
+                    binding.is_storage_image = true;
+                    binding.storage_format = map_storage_format(format);
+                    binding.storage_access = Some(match var_use {
+                        Some(u) if u.writes && !u.reads => wgpu::StorageTextureAccess::WriteOnly,
+                        Some(u) if u.reads && !u.writes => wgpu::StorageTextureAccess::ReadOnly,
+                        // also when the image is only handed to a function we don't follow,
+                        // read-write is the conservative choice
+                        _ => wgpu::StorageTextureAccess::ReadWrite,
+                    });
+                }
+            }
+            Some(Ty::Sampler) => binding.is_comparison = var_use.is_some_and(|u| u.comparison),
+            _ => {}
+        }
+        info.bindings.insert(slot, binding);
+    }
+
+    for (name, interface) in entries {
+        let slots = interface.into_iter().filter_map(slot_of).collect();
+        info.entry_usage.insert(name, slots);
+    }
+
+    Ok(info)
+}
+
+/// Reads a nul-terminated string packed in words, returns it with the number of words it took.
+fn decode_string(words: &[u32]) -> Result<(String, usize), String> {
+    let mut bytes = Vec::new();
+    for (i, word) in words.iter().enumerate() {
+        for byte in word.to_le_bytes() {
+            if byte == 0 {
+                let name = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+                return Ok((name, i + 1));
+            }
+            bytes.push(byte);
+        }
+    }
+    Err("unterminated entry point name".into())
+}
+
+fn map_storage_format(format: ImageFormat) -> Option<wgpu::TextureFormat> {
+    use wgpu::TextureFormat as T;
+    Some(match format {
+        ImageFormat::Rgba32f => T::Rgba32Float,
+        ImageFormat::Rgba16f => T::Rgba16Float,
+        ImageFormat::R32f => T::R32Float,
+        ImageFormat::Rgba8 => T::Rgba8Unorm,
+        ImageFormat::Rgba8Snorm => T::Rgba8Snorm,
+        ImageFormat::Rg32f => T::Rg32Float,
+        ImageFormat::Rg16f => T::Rg16Float,
+        ImageFormat::R11fG11fB10f => T::Rg11b10Ufloat,
+        ImageFormat::R16f => T::R16Float,
+        ImageFormat::Rgba16 => T::Rgba16Unorm,
+        ImageFormat::Rgb10A2 => T::Rgb10a2Unorm,
+        ImageFormat::Rg16 => T::Rg16Unorm,
+        ImageFormat::Rg8 => T::Rg8Unorm,
+        ImageFormat::R16 => T::R16Unorm,
+        ImageFormat::R8 => T::R8Unorm,
+        ImageFormat::Rgba16Snorm => T::Rgba16Snorm,
+        ImageFormat::Rg16Snorm => T::Rg16Snorm,
+        ImageFormat::Rg8Snorm => T::Rg8Snorm,
+        ImageFormat::R16Snorm => T::R16Snorm,
+        ImageFormat::R8Snorm => T::R8Snorm,
+        ImageFormat::Rgba32i => T::Rgba32Sint,
+        ImageFormat::Rgba16i => T::Rgba16Sint,
+        ImageFormat::Rgba8i => T::Rgba8Sint,
+        ImageFormat::R32i => T::R32Sint,
+        ImageFormat::Rg32i => T::Rg32Sint,
+        ImageFormat::Rg16i => T::Rg16Sint,
+        ImageFormat::Rg8i => T::Rg8Sint,
+        ImageFormat::R16i => T::R16Sint,
+        ImageFormat::R8i => T::R8Sint,
+        ImageFormat::Rgba32ui => T::Rgba32Uint,
+        ImageFormat::Rgba16ui => T::Rgba16Uint,
+        ImageFormat::Rgba8ui => T::Rgba8Uint,
+        ImageFormat::R32ui => T::R32Uint,
+        ImageFormat::Rgb10a2ui => T::Rgb10a2Uint,
+        ImageFormat::Rg32ui => T::Rg32Uint,
+        ImageFormat::Rg16ui => T::Rg16Uint,
+        ImageFormat::Rg8ui => T::Rg8Uint,
+        ImageFormat::R16ui => T::R16Uint,
+        ImageFormat::R8ui => T::R8Uint,
+        ImageFormat::R64ui => T::R64Uint,
+        ImageFormat::Unknown | ImageFormat::R64i => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(bytes: &[u8]) -> Vec<u32> {
+        bytes
+            .chunks_exact(4)
+            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+            .collect()
+    }
+
+    fn fill() -> SpirvInfo {
+        scan(&words(include_bytes!("testdata/fill.spv"))).unwrap()
+    }
+
+    #[test]
+    fn storage_image_format_and_access() {
+        let info = fill();
+        let target = &info.bindings[&(1, 1)];
+        assert!(target.is_storage_image);
+        assert_eq!(target.storage_format, Some(wgpu::TextureFormat::Rgba16Float));
+        // the shader only writes to it, slang doesn't decorate that
+        assert_eq!(target.storage_access, Some(wgpu::StorageTextureAccess::WriteOnly));
+    }
+
+    #[test]
+    fn depth_compare_marks_both_the_image_and_the_sampler() {
+        let info = fill();
+        let shadow = &info.bindings[&(0, 1)];
+        assert!(shadow.is_depth && !shadow.is_storage_image);
+        assert!(info.bindings[&(0, 2)].is_comparison);
+        // plain buffers aren't marked as anything
+        assert_eq!(info.bindings[&(1, 0)], SpirvBinding::default());
+    }
+
+    #[test]
+    fn entry_points_list_the_slots_they_use() {
+        let info = fill();
+        let expected: HashSet<Slot> = [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1)].into();
+        assert_eq!(info.entry_usage["csMain"], expected);
+        assert_eq!(info.uniform_buffers, HashSet::from([(0, 0)]));
+    }
+
+    #[test]
+    fn loose_globals_end_up_in_an_undescribed_uniform_buffer() {
+        let info = scan(&words(include_bytes!("testdata/globals.spv"))).unwrap();
+        assert_eq!(info.uniform_buffers, HashSet::from([(0, 0)]));
+        assert!(info.entry_usage["csMain"].contains(&(0, 0)));
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(scan(&[1, 2, 3]).is_err());
+        assert!(scan(&[0xdead_beef, 0, 0, 0, 0]).is_err());
+        // an instruction that claims to be longer than the module
+        assert!(scan(&[spirv::MAGIC_NUMBER, 0, 0, 0, 0, 5 << 16]).is_err());
+    }
+}

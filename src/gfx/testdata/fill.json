@@ -1,0 +1,169 @@
+{
+    "parameters": [
+        {
+            "name": "params",
+            "binding": {"kind": "subElementRegisterSpace", "index": 0},
+            "type": {
+                "kind": "parameterBlock",
+                "elementType": {
+                    "kind": "struct",
+                    "name": "Params",
+                    "fields": [
+                        {
+                            "name": "shadow",
+                            "type": {
+                                "kind": "resource",
+                                "baseShape": "texture2D",
+                                "resultType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "descriptorTableSlot", "index": 1}
+                        },
+                        {
+                            "name": "shadowSampler",
+                            "type": {
+                                "kind": "samplerState"
+                            },
+                            "binding": {"kind": "descriptorTableSlot", "index": 2}
+                        },
+                        {
+                            "name": "tint",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
+                        }
+                    ]
+                },
+                "containerVarLayout": {
+                    "bindings": [
+                        {"kind": "descriptorTableSlot", "index": 0},
+                        {"kind": "subElementRegisterSpace", "index": 0}
+                    ]
+                },
+                "elementVarLayout": {
+                    "type": {
+                        "kind": "struct",
+                        "name": "Params",
+                        "fields": [
+                            {
+                                "name": "shadow",
+                                "type": {
+                                    "kind": "resource",
+                                    "baseShape": "texture2D",
+                                    "resultType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "binding": {"kind": "descriptorTableSlot", "index": 0}
+                            },
+                            {
+                                "name": "shadowSampler",
+                                "type": {
+                                    "kind": "samplerState"
+                                },
+                                "binding": {"kind": "descriptorTableSlot", "index": 1}
+                            },
+                            {
+                                "name": "tint",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
+                            }
+                        ]
+                    },
+                    "bindings": [
+                        {"kind": "descriptorTableSlot", "index": 1, "count": 2},
+                        {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 0}
+                    ]
+                }
+            }
+        },
+        {
+            "name": "output",
+            "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0},
+            "type": {
+                "kind": "resource",
+                "baseShape": "structuredBuffer",
+                "access": "readWrite",
+                "resultType": {
+                    "kind": "vector",
+                    "elementCount": 4,
+                    "elementType": {
+                        "kind": "scalar",
+                        "scalarType": "float32"
+                    }
+                }
+            }
+        },
+        {
+            "name": "target",
+            "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 1},
+            "format": "rgba16f",
+            "type": {
+                "kind": "resource",
+                "baseShape": "texture2D",
+                "access": "readWrite",
+                "resultType": {
+                    "kind": "vector",
+                    "elementCount": 4,
+                    "elementType": {
+                        "kind": "scalar",
+                        "scalarType": "float32"
+                    }
+                }
+            }
+        }
+    ],
+    "entryPoints": [
+        {
+            "name": "csMain",
+            "stage": "compute",
+            "parameters": [
+                {
+                    "name": "id",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        }
+                    }
+                }
+            ],
+            "threadGroupSize": [8, 8, 1],
+            "bindings": [
+                {
+                    "name": "params",
+                    "binding": {"kind": "subElementRegisterSpace", "index": 0}
+                },
+                {
+                    "name": "output",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}
+                },
+                {
+                    "name": "target",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 1},
+                    "format": "rgba16f"
+                }
+            ]
+        }
+    ],
+    "bindlessSpaceIndex": 2
+}
