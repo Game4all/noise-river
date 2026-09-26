@@ -1,4 +1,5 @@
 mod app;
+mod gfx;
 
 use app::*;
 

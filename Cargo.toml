@@ -6,3 +6,8 @@ publish = false
 
 [dependencies]
 winit = "0.30.13"
+wgpu = { version = "30", features = ["vulkan-portability"] }
+egui = "0.36"
+egui-wgpu = "0.36"
+egui-winit = "0.36"
+pollster = "1"
