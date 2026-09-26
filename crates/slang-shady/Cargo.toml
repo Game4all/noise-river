@@ -9,3 +9,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 spirv = { workspace = true }
 thiserror = { workspace = true }
+
+[features]
+# compiles the shaders in testdata/ on demand, for the tests of this crate and of the crates using it
+testing = []

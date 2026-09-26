@@ -179,16 +179,12 @@ impl ShaderReflection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::StorageFormat;
-
-    fn words(bytes: &[u8]) -> Vec<u32> {
-        spirv::words(bytes).unwrap()
-    }
+    use crate::{testdata, types::StorageFormat};
 
     fn fill(with_spirv: bool) -> ShaderReflection {
-        let spirv = words(include_bytes!("../testdata/fill.spv"));
+        let spirv = testdata::spirv("fill");
         ShaderReflection::from_sources(
-            include_str!("../testdata/fill.json"),
+            &testdata::json("fill"),
             with_spirv.then_some(spirv.as_slice()),
         )
         .unwrap()
@@ -277,14 +273,14 @@ mod tests {
 
     #[test]
     fn loose_globals_only_get_a_binding_with_the_spirv() {
-        let json = include_str!("../testdata/globals.json");
-        let spirv = words(include_bytes!("../testdata/globals.spv"));
+        let json = testdata::json("globals");
+        let spirv = testdata::spirv("globals");
 
-        let without = ShaderReflection::from_sources(json, None).unwrap();
+        let without = ShaderReflection::from_sources(&json, None).unwrap();
         assert!(without.has_global_uniforms);
         assert!(without.binding(GLOBALS_NAME).is_none());
 
-        let with = ShaderReflection::from_sources(json, Some(&spirv)).unwrap();
+        let with = ShaderReflection::from_sources(&json, Some(&spirv)).unwrap();
         let globals = with.binding(GLOBALS_NAME).unwrap();
         assert_eq!(globals.slot(), (0, 0));
         assert_eq!(globals.kind, BindingKind::UniformBuffer);
@@ -296,7 +292,7 @@ mod tests {
 
     #[test]
     fn load_reads_the_files_and_the_binary_is_optional() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        let dir = testdata::path("");
 
         let json_only = ShaderReflection::load(dir.join("fill.json"), None).unwrap();
         assert!(!json_only.spirv_scanned);

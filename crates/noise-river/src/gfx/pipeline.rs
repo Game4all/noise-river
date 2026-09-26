@@ -594,7 +594,7 @@ mod tests {
     }
 
     fn manager() -> PipelineManager {
-        PipelineManager::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../slang-shady/testdata"))
+        PipelineManager::new(slang_shady::testdata::dir())
     }
 
     fn render_desc<'a>(vertex: ShaderRef<'a>, fragment: Option<ShaderRef<'a>>) -> RenderPipelineDesc<'a> {

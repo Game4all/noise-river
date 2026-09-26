@@ -405,6 +405,7 @@ fn vertex_format(name: &str, ty: &TypeLayout) -> Result<VertexFormat, Unsupporte
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testdata;
 
     fn load(json: &str) -> ShaderReflection {
         parse(json).unwrap().flatten().unwrap()
@@ -420,7 +421,7 @@ mod tests {
 
     #[test]
     fn push_constants_and_vertex_inputs() {
-        let module = load(include_str!("../testdata/triangle.json"));
+        let module = load(&testdata::json("triangle"));
 
         assert!(module.bindings.is_empty());
         assert_eq!(module.immediate_size, 4);
@@ -448,7 +449,7 @@ mod tests {
     #[test]
     fn vertex_id_is_not_a_vertex_input() {
         // the vertices come from constants in the shader and SV_VulkanVertexID
-        let module = load(include_str!("../testdata/vertex_id.json"));
+        let module = load(&testdata::json("vertex_id"));
 
         assert!(module.entry_points["vsMain"].vertex_inputs.is_empty());
         assert_eq!(module.immediate_size, 4);
@@ -456,7 +457,7 @@ mod tests {
 
     #[test]
     fn parameter_block_gets_its_own_set_with_an_implicit_buffer() {
-        let module = load(include_str!("../testdata/fill.json"));
+        let module = load(&testdata::json("fill"));
 
         let slots: Vec<_> = module
             .bindings
@@ -495,7 +496,7 @@ mod tests {
 
     #[test]
     fn loose_globals_and_structs_of_resources() {
-        let module = load(include_str!("../testdata/globals.json"));
+        let module = load(&testdata::json("globals"));
 
         assert!(module.has_global_uniforms);
         let slots: Vec<_> = module

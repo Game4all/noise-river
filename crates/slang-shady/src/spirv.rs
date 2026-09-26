@@ -282,13 +282,14 @@ fn map_storage_format(format: ImageFormat) -> Option<StorageFormat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testdata;
 
     fn load(bytes: &[u8]) -> SpirvInfo {
         scan(&words(bytes).unwrap()).unwrap()
     }
 
     fn fill() -> SpirvInfo {
-        load(include_bytes!("../testdata/fill.spv"))
+        load(&testdata::spirv_bytes("fill"))
     }
 
     #[test]
@@ -321,7 +322,7 @@ mod tests {
 
     #[test]
     fn loose_globals_end_up_in_an_undescribed_uniform_buffer() {
-        let info = load(include_bytes!("../testdata/globals.spv"));
+        let info = load(&testdata::spirv_bytes("globals"));
         assert_eq!(info.uniform_buffers, HashSet::from([(0, 0)]));
         assert!(info.entry_usage["csMain"].contains(&(0, 0)));
     }

@@ -9,6 +9,9 @@ mod error;
 mod json;
 mod shader;
 mod spirv;
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
+pub mod testdata;
 pub mod types;
 
 pub use error::{ReflectionError, SpirvError, UnsupportedType};

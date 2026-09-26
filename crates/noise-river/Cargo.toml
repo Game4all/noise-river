@@ -16,3 +16,6 @@ thiserror = { workspace = true }
 
 [build-dependencies]
 build-rs = { workspace = true }
+
+[dev-dependencies]
+slang-shady = { workspace = true, features = ["testing"] }
