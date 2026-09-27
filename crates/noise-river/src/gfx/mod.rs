@@ -63,10 +63,14 @@ impl GfxContext {
             | wgpu::Features::BUFFER_BINDING_ARRAY
             | wgpu::Features::STORAGE_RESOURCE_BINDING_ARRAY;
 
+        let adapter_limits = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_features: required_features,
             required_limits: wgpu::Limits {
-                max_immediate_size: adapter.limits().max_immediate_size.min(128),
+                max_immediate_size: adapter_limits.max_immediate_size.min(128),
+                // the default 128 MiB is too small for the trail history of a lot of particles
+                max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+                max_buffer_size: adapter_limits.max_buffer_size,
                 ..wgpu::Limits::default()
             },
             ..Default::default()
@@ -132,6 +136,32 @@ impl GfxContext {
     pub fn present(&self, frame: wgpu::SurfaceTexture) {
         self.queue.present(frame);
     }
+}
+
+/// A headless device like the one `GfxContext` makes, `None` when there is no Vulkan to run on.
+/// For tests.
+#[cfg(test)]
+pub(crate) fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        flags: wgpu::InstanceFlags::debugging(),
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .ok()?;
+    let adapter_limits = adapter.limits();
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_features: wgpu::Features::PASSTHROUGH_SHADERS | wgpu::Features::IMMEDIATES,
+        required_limits: wgpu::Limits {
+            max_immediate_size: 128,
+            max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+            max_buffer_size: adapter_limits.max_buffer_size,
+            ..Default::default()
+        },
+        ..Default::default()
+    }))
+    .ok()
 }
 
 /// egui context together with its winit integration state and wgpu renderer.

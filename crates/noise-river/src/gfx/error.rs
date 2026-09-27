@@ -29,6 +29,9 @@ pub enum PipelineError {
     /// A binding override that doesn't match any reflected binding, most likely a typo.
     #[error("binding override `{name}` doesn't match any shader binding")]
     UnknownOverride { name: String },
+    /// A bind group was asked to bind a name that the pipeline has no resource of in that set.
+    #[error("the pipeline has no binding `{name}` in set {set}")]
+    UnknownBinding { name: String, set: u32 },
     #[error("set {set} binding {binding} is `{first}` in one stage and `{second}` in another")]
     BindingConflict {
         set: u32,

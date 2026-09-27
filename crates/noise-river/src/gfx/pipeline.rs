@@ -82,6 +82,43 @@ impl PipelineLayoutInfo {
     pub fn binding(&self, name: &str) -> Option<Slot> {
         self.slots.get(name).copied()
     }
+
+    /// Makes the bind group of a descriptor set out of resources given by their names in the shader,
+    /// so that the binding numbers stay the shader's business. Every resource that the set has must be
+    /// given, wgpu rejects the bind group otherwise.
+    pub fn create_bind_group<'a>(
+        &self,
+        device: &wgpu::Device,
+        set: u32,
+        label: &str,
+        resources: impl IntoIterator<Item = (&'a str, wgpu::BindingResource<'a>)>,
+    ) -> Result<wgpu::BindGroup, PipelineError> {
+        let layout = self
+            .bind_group_layout(set)
+            .ok_or_else(|| PipelineError::UnknownBinding {
+                name: label.to_owned(),
+                set,
+            })?;
+
+        let entries = resources
+            .into_iter()
+            .map(|(name, resource)| match self.binding(name) {
+                Some((resource_set, binding)) if resource_set == set => {
+                    Ok(wgpu::BindGroupEntry { binding, resource })
+                }
+                _ => Err(PipelineError::UnknownBinding {
+                    name: name.to_owned(),
+                    set,
+                }),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout,
+            entries: &entries,
+        }))
+    }
 }
 
 pub struct RenderPipeline {
@@ -570,27 +607,8 @@ fn binding_array_feature(ty: &wgpu::BindingType) -> wgpu::Features {
 mod tests {
     use super::*;
 
-    /// A headless device like the one `GfxContext` makes, `None` when there is no Vulkan to run on.
     fn device() -> Option<wgpu::Device> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
-            flags: wgpu::InstanceFlags::debugging(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .ok()?;
-        let features = wgpu::Features::PASSTHROUGH_SHADERS | wgpu::Features::IMMEDIATES;
-        let (device, _queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: features,
-            required_limits: wgpu::Limits {
-                max_immediate_size: 128,
-                ..Default::default()
-            },
-            ..Default::default()
-        }))
-        .ok()?;
-        Some(device)
+        crate::gfx::test_device().map(|(device, _queue)| device)
     }
 
     fn manager() -> PipelineManager {
