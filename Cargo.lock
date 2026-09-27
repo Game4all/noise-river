@@ -1351,9 +1351,11 @@ name = "noise-river"
 version = "0.1.0"
 dependencies = [
  "build-rs",
+ "bytemuck",
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "png",
  "pollster",
  "slang-shady",
  "thiserror 2.0.21",

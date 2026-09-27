@@ -11,6 +11,8 @@ egui = { workspace = true }
 egui-wgpu = { workspace = true }
 egui-winit = { workspace = true }
 pollster = { workspace = true }
+bytemuck = { workspace = true }
+png = { workspace = true }
 slang-shady = { workspace = true }
 thiserror = { workspace = true }
 
