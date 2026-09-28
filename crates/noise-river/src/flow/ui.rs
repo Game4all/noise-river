@@ -199,6 +199,40 @@ impl FlowFieldSimulation {
                 .on_hover_text("Picks the noise field. 42 is the one of the html.");
         });
 
+        ui.checkbox(&mut params.morph_field, "morph (loop)")
+            .on_hover_text(
+                "Moves the field along a third dimension that loops, instead of leaving it still. \
+                 At the very start of the loop the field is exactly the same as with morph off.",
+            );
+        ui.add_enabled(
+            params.morph_field,
+            Slider::new(&mut params.morph_period_seconds, 2.0..=300.0)
+                .logarithmic(true)
+                .suffix(" s")
+                .text("loop period"),
+        )
+        .on_hover_text("Seconds for the field to complete one loop and return to how it started.");
+        ui.add_enabled(
+            params.morph_field,
+            Slider::new(&mut params.morph_layers, 1..=16).text("change per loop"),
+        )
+        .on_hover_text(
+            "How many distinct fields the loop passes through. More is a bigger change over it.",
+        );
+
+        let layers = params.morph_layers.max(1) as f32;
+        let mut position = self.morph_z / layers;
+        if ui
+            .add(Slider::new(&mut position, 0.0..=1.0).text("loop position"))
+            .on_hover_text(
+                "Where the field is in its loop. Drag to scrub it by hand, whether or not morph is \
+                 checked; 0 is the field at rest, the same one as with morph off.",
+            )
+            .changed()
+        {
+            self.morph_z = position * layers;
+        }
+
         ui.add(Slider::new(&mut params.time_scale, 0.0..=4.0).text("speed of time"))
             .on_hover_text(
                 "Runs the whole simulation faster or slower. It always ticks at a fixed rate.",

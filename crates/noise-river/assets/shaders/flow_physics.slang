@@ -9,6 +9,13 @@ import perlin;
 [[vk::binding(1, 0)]] StructuredBuffer<uint> perm;
 [[vk::binding(2, 0)]] RWStructuredBuffer<Particle> particles;
 
+struct Push
+{
+    float morphZ;       // where the field is along its animated axis, 0 is the field at rest
+    uint morphLayers;   // how many distinct fields morphZ cycles through
+};
+[[vk::push_constant]] ConstantBuffer<Push> push;
+
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void csPhysics(uint3 id : SV_DispatchThreadID)
@@ -23,10 +30,11 @@ void csPhysics(uint3 id : SV_DispatchThreadID)
         return;
 
     // two octaves: broad sweeps from the base, and a higher frequency layer so that the target keeps
-    // wobbling even across a patch where the base field is flat
+    // wobbling even across a patch where the base field is flat. Both ride along the same morph axis,
+    // which is a no-op (morphZ = 0) unless the field is animated.
     float2 samplePos = p.pos * params.noiseScale;
-    float nBase = perlin2D(perm, samplePos);
-    float nDetail = perlin2D(perm, samplePos * params.detailScale + 1000.0);
+    float nBase = perlin3D(perm, float3(samplePos, push.morphZ), push.morphLayers);
+    float nDetail = perlin3D(perm, float3(samplePos * params.detailScale + 1000.0, push.morphZ), push.morphLayers);
     float n = nBase * (1.0 - params.detailWeight) + nDetail * params.detailWeight;
 
     float targetAngle = params.biasAngle + n * params.maxDeviation;

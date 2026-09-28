@@ -15,6 +15,10 @@
 //! remember which particle a pixel came from.
 //!
 //! The simulation ticks at a fixed 60 Hz, so it runs the same whatever the frame rate is.
+//!
+//! The field itself can be animated: the physics pass samples the noise along a third axis
+//! (`lib/perlin.slang`'s `perlin3D`) that [`FlowFieldSimulation`] advances by [`FlowParams::morph_step`]
+//! every tick and wraps, so the field loops back to how it started instead of drifting forever.
 
 mod export;
 mod params;
@@ -342,6 +346,9 @@ pub struct FlowFieldSimulation {
     tick: u32,
     /// Ticks that the time since the last frame is worth, and that haven't been run yet.
     tick_debt: f32,
+    /// Where the field is along its animated axis, in layers. 0 is the field at rest, and it wraps
+    /// at `params.morph_layers` so the field loops. Untouched by a reset or a resize.
+    morph_z: f32,
     reset_pending: bool,
     export: export::Exporter,
 }
@@ -397,6 +404,7 @@ impl FlowFieldSimulation {
             scale_factor,
             tick: 0,
             tick_debt: 0.0,
+            morph_z: 0.0,
             reset_pending: true,
             export: export::Exporter::default(),
         })
@@ -578,12 +586,23 @@ impl FlowFieldSimulation {
             pass.dispatch_workgroups(groups(trails), 1, 1);
         }
 
+        let morph_layers = self.params.morph_layers.max(1);
+        let morph_step = self.params.morph_step();
+
         for _ in 0..ticks {
             self.tick = self.tick.wrapping_add(1);
 
             pass.set_pipeline(&physics.pipeline);
             pass.set_bind_group(0, &self.sim.physics, &[]);
+            pass.set_immediates(
+                0,
+                bytemuck::bytes_of(&PhysicsPush {
+                    morph_z: self.morph_z,
+                    morph_layers,
+                }),
+            );
             pass.dispatch_workgroups(groups(physics), 1, 1);
+            self.morph_z = (self.morph_z + morph_step) % morph_layers as f32;
 
             pass.set_pipeline(&lifetime.pipeline);
             pass.set_bind_group(0, &self.sim.lifetime, &[]);

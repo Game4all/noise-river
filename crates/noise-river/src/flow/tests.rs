@@ -172,6 +172,11 @@ fn every_pass_builds_and_binds_what_its_shader_declares() {
         let pipeline = harness.manager.compute_pipeline(id);
         assert_eq!(pipeline.workgroup_size, [256, 1, 1], "{name}");
     }
+    let physics = &harness
+        .manager
+        .compute_pipeline(harness.field.ids.physics)
+        .layout;
+    assert_eq!(physics.immediate_size, 8, "the morph push constant");
     let lifetime = &harness
         .manager
         .compute_pipeline(harness.field.ids.lifetime)
@@ -314,6 +319,20 @@ void csProbe(uint3 id : SV_DispatchThreadID)
 {
     result[id.x] = perlin2D(perm, points[id.x]);
 }
+
+struct Push
+{
+    float z;
+    uint layers;
+};
+[[vk::push_constant]] ConstantBuffer<Push> push;
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void csProbe3D(uint3 id : SV_DispatchThreadID)
+{
+    result[id.x] = perlin3D(perm, float3(points[id.x], push.z), push.layers);
+}
 "#;
 
 /// Compiles the probe against the real `lib/perlin.slang`, once for all the tests.
@@ -360,21 +379,24 @@ const HTML_NOISE: [([f32; 2], f32); 6] = [
     ([100.001, 200.002], 0.004_000_069),
 ];
 
-#[test]
-fn the_shader_noise_matches_the_perlin_class_of_the_html() {
-    let Some((device, queue)) = test_device() else {
-        eprintln!("no Vulkan adapter, skipping");
-        return;
-    };
+/// Runs `entry_point` of `PERLIN_PROBE` over `points` and returns what it wrote to `result`. `push`
+/// is the immediate data for `csProbe3D` (z, then layers), left out for `csProbe`.
+fn run_perlin_probe(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    entry_point: &str,
+    points: &[[f32; 2]],
+    push: Option<(f32, u32)>,
+) -> Vec<f32> {
     let mut manager = PipelineManager::new(perlin_probe_dir());
     let id = manager
         .create_compute_pipeline(
-            &device,
+            device,
             &ComputePipelineDesc {
                 label: "perlin probe",
                 shader: ShaderRef {
                     module: "perlin_probe",
-                    entry_point: "csProbe",
+                    entry_point,
                 },
                 binding_overrides: &[],
             },
@@ -394,27 +416,26 @@ fn the_shader_noise_matches_the_perlin_class_of_the_html() {
         bytemuck::cast_slice(&perlin::permutation(42)),
         wgpu::BufferUsages::STORAGE,
     );
-    let points: Vec<[f32; 2]> = HTML_NOISE.iter().map(|(point, _)| *point).collect();
-    let points = init(
+    let points_buf = init(
         "points",
-        bytemuck::cast_slice(&points),
+        bytemuck::cast_slice(points),
         wgpu::BufferUsages::STORAGE,
     );
     let result = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("result"),
-        size: (HTML_NOISE.len() * 4) as u64,
+        size: (points.len() * 4) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
     let bind_group = pipeline
         .layout
         .create_bind_group(
-            &device,
+            device,
             0,
             "perlin probe",
             [
                 ("perm", perm.as_entire_binding()),
-                ("points", points.as_entire_binding()),
+                ("points", points_buf.as_entire_binding()),
                 ("result", result.as_entire_binding()),
             ],
         )
@@ -425,17 +446,94 @@ fn the_shader_noise_matches_the_perlin_class_of_the_html() {
         let mut pass = encoder.begin_compute_pass(&Default::default());
         pass.set_pipeline(&pipeline.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(HTML_NOISE.len() as u32, 1, 1);
+        if let Some((z, layers)) = push {
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&z.to_le_bytes());
+            bytes[4..].copy_from_slice(&layers.to_le_bytes());
+            pass.set_immediates(0, &bytes);
+        }
+        pass.dispatch_workgroups(points.len() as u32, 1, 1);
     }
     queue.submit([encoder.finish()]);
 
-    let got: Vec<f32> = read_buffer(&device, &queue, &result, HTML_NOISE.len());
+    read_buffer(device, queue, &result, points.len())
+}
+
+#[test]
+fn the_shader_noise_matches_the_perlin_class_of_the_html() {
+    let Some((device, queue)) = test_device() else {
+        eprintln!("no Vulkan adapter, skipping");
+        return;
+    };
+    let points: Vec<[f32; 2]> = HTML_NOISE.iter().map(|(point, _)| *point).collect();
+    let got = run_perlin_probe(&device, &queue, "csProbe", &points, None);
     for ((point, expected), got) in HTML_NOISE.iter().zip(got) {
         assert!(
             (got - expected).abs() < 1e-4,
             "noise at {point:?} is {got}, the html says {expected}"
         );
     }
+}
+
+#[test]
+fn perlin3d_matches_perlin2d_at_rest_and_loops_seamlessly() {
+    let Some((device, queue)) = test_device() else {
+        eprintln!("no Vulkan adapter, skipping");
+        return;
+    };
+    let points: Vec<[f32; 2]> = HTML_NOISE.iter().map(|(point, _)| *point).collect();
+    let layers = 3u32;
+    let probe = |z: f32, points: &[[f32; 2]]| {
+        run_perlin_probe(&device, &queue, "csProbe3D", points, Some((z, layers)))
+    };
+
+    // z = 0 is bit for bit the html's 2D field
+    let at_zero = probe(0.0, &points);
+    for ((point, expected), got) in HTML_NOISE.iter().zip(&at_zero) {
+        assert!(
+            (got - expected).abs() < 1e-4,
+            "noise at {point:?} is {got}, the html says {expected}"
+        );
+    }
+
+    // periodic: z and z + layers agree
+    let at_mid = probe(0.3, &points);
+    let at_mid_plus_period = probe(0.3 + layers as f32, &points);
+    for (a, b) in at_mid.iter().zip(&at_mid_plus_period) {
+        assert!((a - b).abs() < 1e-4, "{a} at z=0.3 vs {b} at z=0.3+layers");
+    }
+
+    // continuous across the wrap: just before the period matches just after it started
+    let at_end = probe(layers as f32 - 1e-3, &points);
+    for (a, b) in at_end.iter().zip(&at_zero) {
+        assert!((a - b).abs() < 2e-2, "{a} at the wrap vs {b} at z=0");
+    }
+
+    // it actually moves, for most points
+    let at_1_5 = probe(1.5, &points);
+    let moved = at_zero
+        .iter()
+        .zip(&at_1_5)
+        .filter(|(a, b)| (*a - *b).abs() > 1e-3)
+        .count();
+    assert!(
+        moved * 4 >= at_zero.len() * 3,
+        "the field barely moved: {moved}/{} points changed",
+        at_zero.len()
+    );
+
+    // doesn't go flat halfway between layers
+    let grid: Vec<[f32; 2]> = (0..16)
+        .flat_map(|x| (0..16).map(move |y| [x as f32 * 3.7, y as f32 * 2.9]))
+        .collect();
+    let rms =
+        |values: &[f32]| (values.iter().map(|v| v * v).sum::<f32>() / values.len() as f32).sqrt();
+    let rms_zero = rms(&probe(0.0, &grid));
+    let rms_half = rms(&probe(0.5, &grid));
+    assert!(
+        rms_half > rms_zero * 0.65 && rms_half < rms_zero * 1.35,
+        "rms collapsed across the layers: {rms_zero} at z=0, {rms_half} at z=0.5"
+    );
 }
 
 // ---- what gets drawn ----
@@ -677,6 +775,73 @@ fn the_clock_runs_the_simulation_at_a_fixed_rate() {
     assert_eq!(field.advance_clock(1.0 / 60.0), 2);
     field.params.paused = true;
     assert_eq!(field.advance_clock(1.0 / 60.0), 0);
+}
+
+// ---- the field's motion ----
+
+#[test]
+fn the_morph_axis_advances_by_ticks_and_loops() {
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    harness.field.params.morph_field = true;
+    harness.field.params.morph_period_seconds = 1.0;
+    harness.field.params.morph_layers = 3;
+
+    // one whole period, at a fixed 60 ticks per second. `morph_z` stays in [0, layers), so being
+    // back at the start of the loop means it is close to either end of that range.
+    harness.step(60);
+    let layers = harness.field.params.morph_layers as f32;
+    let z = harness.field.morph_z;
+    assert!(
+        z.min(layers - z) < 1e-2,
+        "should be back at the start of the loop: {z} (layers = {layers})"
+    );
+
+    // paused, the field stops moving
+    harness.field.params.paused = true;
+    let z = harness.field.morph_z;
+    harness.step(30);
+    assert_eq!(
+        harness.field.morph_z, z,
+        "paused, the field should not move"
+    );
+}
+
+#[test]
+fn morphing_the_field_steers_particles_differently_than_a_still_one() {
+    let (Some(mut still), Some(mut other_still), Some(mut morphing)) =
+        (Harness::new(), Harness::new(), Harness::new())
+    else {
+        return;
+    };
+    morphing.field.params.morph_field = true;
+    morphing.field.params.morph_period_seconds = 0.5;
+    morphing.field.params.morph_layers = 4;
+
+    still.step(90);
+    other_still.step(90);
+    morphing.step(90);
+
+    let pos = |h: &Harness| h.particles().iter().map(|p| p.pos).collect::<Vec<_>>();
+    assert_eq!(
+        pos(&still),
+        pos(&other_still),
+        "two still fields with the same seed should end up identical"
+    );
+
+    let still_pos = pos(&still);
+    let morph_pos = pos(&morphing);
+    let moved = still_pos
+        .iter()
+        .zip(&morph_pos)
+        .filter(|(a, b)| (a[0] - b[0]).abs() > 1e-3 || (a[1] - b[1]).abs() > 1e-3)
+        .count();
+    assert!(
+        moved > still_pos.len() / 2,
+        "morphing the field should steer most particles differently: {moved}/{}",
+        still_pos.len()
+    );
 }
 
 #[test]

@@ -72,6 +72,14 @@ pub struct FlowParams {
     /// Picks the noise field, and the sequence of random numbers of the particles.
     pub noise_seed: u32,
 
+    // ---- the field's motion ----
+    /// Moves the field along a third noise dimension that loops, instead of leaving it still.
+    pub morph_field: bool,
+    /// Seconds for the field to complete one loop and return to how it started.
+    pub morph_period_seconds: f32,
+    /// How many distinct fields one loop passes through. More is a bigger change over the loop.
+    pub morph_layers: u32,
+
     // ---- what every particle rolls at its spawn, so these only change new particles ----
     /// Pixels per tick.
     pub speed: Range,
@@ -121,6 +129,10 @@ impl Default for FlowParams {
             turn_smoothing: 0.12,
             noise_seed: 42,
 
+            morph_field: false,
+            morph_period_seconds: 20.0,
+            morph_layers: 3,
+
             speed: Range::new(0.8, 3.2),
             point_size: Range::new(0.6, 2.5),
             // 200 to 500 frames in the html
@@ -167,6 +179,16 @@ impl FlowParams {
     /// Points of history to allocate per particle.
     pub fn trail_capacity(&self) -> u32 {
         self.max_trail_points.max(2)
+    }
+
+    /// How far the field's morph axis moves in one tick, 0 while it is off. `morph_layers` fields
+    /// pass by every `morph_period_seconds`, so a loop is `morph_layers` of them long.
+    pub fn morph_step(&self) -> f32 {
+        if !self.morph_field {
+            return 0.0;
+        }
+        let period = self.morph_period_seconds.max(0.1);
+        self.morph_layers.max(1) as f32 / (period * TICKS_PER_SECOND)
     }
 
     /// How many of the newest points of a trail are drawn, at most `capacity`.
@@ -289,6 +311,14 @@ pub struct GpuParams {
     pub palette_stops: [[f32; 4]; MAX_PALETTE_STOPS],
 }
 
+/// `Push` of `flow_physics.slang`, the immediate data of the physics pass. 8 bytes.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct PhysicsPush {
+    pub morph_z: f32,
+    pub morph_layers: u32,
+}
+
 /// `Particle`, as it is in the particle buffer. std430, 64 bytes.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -384,6 +414,17 @@ mod tests {
 
         params.infinite_trails = true;
         assert_eq!(params.trail_window(900), 900);
+    }
+
+    #[test]
+    fn morph_step_is_zero_unless_the_field_is_animated() {
+        let mut params = FlowParams::default();
+        assert_eq!(params.morph_step(), 0.0, "off by default");
+
+        params.morph_field = true;
+        params.morph_period_seconds = 1.0;
+        params.morph_layers = 3;
+        assert!((params.morph_step() - 3.0 / 60.0).abs() < 1e-6);
     }
 
     #[test]
