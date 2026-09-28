@@ -19,9 +19,15 @@ pub fn binding_type(kind: BindingKind) -> Result<wgpu::BindingType, &'static str
 
     Ok(match kind {
         BindingKind::UniformBuffer => buffer(BufferBindingType::Uniform),
-        BindingKind::StorageBuffer { read_only } => buffer(BufferBindingType::Storage { read_only }),
-        BindingKind::Sampler { comparison: true } => BindingType::Sampler(SamplerBindingType::Comparison),
-        BindingKind::Sampler { comparison: false } => BindingType::Sampler(SamplerBindingType::Filtering),
+        BindingKind::StorageBuffer { read_only } => {
+            buffer(BufferBindingType::Storage { read_only })
+        }
+        BindingKind::Sampler { comparison: true } => {
+            BindingType::Sampler(SamplerBindingType::Comparison)
+        }
+        BindingKind::Sampler { comparison: false } => {
+            BindingType::Sampler(SamplerBindingType::Filtering)
+        }
         BindingKind::Texture {
             dimension,
             sample_type,

@@ -83,11 +83,7 @@ pub(crate) fn scan(words: &[u32]) -> Result<SpirvInfo, SpirvError> {
         let Some(op) = Op::from_u32(inst[0] & 0xFFFF) else {
             continue;
         };
-        let arg = |n: usize| {
-            inst.get(n)
-                .copied()
-                .ok_or(SpirvError::Truncated { op })
-        };
+        let arg = |n: usize| inst.get(n).copied().ok_or(SpirvError::Truncated { op });
         let resolve = |origin: &HashMap<u32, u32>, id: u32| origin.get(&id).copied().unwrap_or(id);
 
         match op {

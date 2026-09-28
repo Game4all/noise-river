@@ -17,10 +17,7 @@ use std::{
     sync::Arc,
 };
 
-use slang_shady::{
-    EntryPoint, ShaderReflection, Slot,
-    types::ShaderStage,
-};
+use slang_shady::{EntryPoint, ShaderReflection, Slot, types::ShaderStage};
 
 use super::{convert, error::PipelineError};
 
@@ -351,14 +348,12 @@ fn entry_point<'m>(
     stage: ShaderStage,
     stage_name: &'static str,
 ) -> Result<&'m EntryPoint, PipelineError> {
-    let reflected = module
-        .reflection
-        .entry_points
-        .get(entry)
-        .ok_or_else(|| PipelineError::UnknownEntryPoint {
+    let reflected = module.reflection.entry_points.get(entry).ok_or_else(|| {
+        PipelineError::UnknownEntryPoint {
             module: module.name.clone(),
             entry: entry.to_owned(),
-        })?;
+        }
+    })?;
     if reflected.stage != Some(stage) {
         return Err(PipelineError::WrongStage {
             module: module.name.clone(),
@@ -429,9 +424,9 @@ fn build_layout(
     }
 
     for (name, _) in overrides {
-        let known = stages.iter().any(|s| {
-            s.module.reflection.bindings.iter().any(|b| b.name == *name)
-        });
+        let known = stages
+            .iter()
+            .any(|s| s.module.reflection.bindings.iter().any(|b| b.name == *name));
         if !known {
             return Err(PipelineError::UnknownOverride {
                 name: (*name).to_owned(),
@@ -499,7 +494,8 @@ fn build_layout(
         )));
     }
 
-    let mut entries_by_set: Vec<Vec<wgpu::BindGroupLayoutEntry>> = vec![Vec::new(); set_count as usize];
+    let mut entries_by_set: Vec<Vec<wgpu::BindGroupLayoutEntry>> =
+        vec![Vec::new(); set_count as usize];
     for (&(set, binding), merged) in &merged {
         if merged.count.is_some() {
             let required = binding_array_feature(&merged.ty);
@@ -615,7 +611,10 @@ mod tests {
         PipelineManager::new(slang_shady::testdata::dir())
     }
 
-    fn render_desc<'a>(vertex: ShaderRef<'a>, fragment: Option<ShaderRef<'a>>) -> RenderPipelineDesc<'a> {
+    fn render_desc<'a>(
+        vertex: ShaderRef<'a>,
+        fragment: Option<ShaderRef<'a>>,
+    ) -> RenderPipelineDesc<'a> {
         RenderPipelineDesc {
             label: "test",
             vertex,
@@ -845,7 +844,10 @@ mod tests {
         ));
 
         let mut desc = render_desc(VERTEX, Some(FRAGMENT));
-        let typo = [("nothing", wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering))];
+        let typo = [(
+            "nothing",
+            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        )];
         desc.binding_overrides = &typo;
         assert!(matches!(
             manager.create_render_pipeline(&device, &desc),

@@ -59,7 +59,9 @@ pub struct EntryPoint {
 impl EntryPoint {
     /// Whether the entry point uses a slot, `None` when that isn't known without the SPIR-V.
     pub fn uses(&self, slot: Slot) -> Option<bool> {
-        self.used_bindings.as_ref().map(|slots| slots.contains(&slot))
+        self.used_bindings
+            .as_ref()
+            .map(|slots| slots.contains(&slot))
     }
 }
 

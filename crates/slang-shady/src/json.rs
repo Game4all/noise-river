@@ -186,7 +186,11 @@ fn visit_var(
 
 /// A `ParameterBlock` gets a descriptor set of its own, and an implicit uniform buffer at the
 /// start of it when it has ordinary data in it.
-fn visit_block(out: &mut ShaderReflection, param: &VarLayout, set: u32) -> Result<(), UnsupportedType> {
+fn visit_block(
+    out: &mut ShaderReflection,
+    param: &VarLayout,
+    set: u32,
+) -> Result<(), UnsupportedType> {
     let path = &param.name;
     let container = param.ty.container_var_layout.as_deref();
     let element = param
@@ -274,7 +278,9 @@ fn binding_kind(path: &str, ty: &TypeLayout) -> Result<BindingKind, UnsupportedT
                     let read_only = matches!(ty.access.as_deref(), None | Some("read"));
                     Ok(BindingKind::StorageBuffer { read_only })
                 }
-                "texture1D" | "texture2D" | "texture3D" | "textureCube" => texture_kind(path, shape, ty),
+                "texture1D" | "texture2D" | "texture3D" | "textureCube" => {
+                    texture_kind(path, shape, ty)
+                }
                 other => Err(build_unsupported(path, format!("resource shape `{other}`"))),
             }
         }
@@ -370,10 +376,7 @@ fn vertex_format(name: &str, ty: &TypeLayout) -> Result<VertexFormat, Unsupporte
 
     let (scalar, count) = match ty.kind.as_str() {
         "scalar" => (ty.scalar_type.as_deref(), 1),
-        "vector" => (
-            scalar_type(Some(ty)),
-            ty.element_count.unwrap_or(0),
-        ),
+        "vector" => (scalar_type(Some(ty)), ty.element_count.unwrap_or(0)),
         _ => (None, 0),
     };
 
@@ -542,9 +545,17 @@ mod tests {
     fn texture_shapes_and_sample_types() {
         use TextureDimension as Dim;
         let cases = [
-            (r#""baseShape": "textureCube", "array": true"#, Dim::CubeArray, false),
+            (
+                r#""baseShape": "textureCube", "array": true"#,
+                Dim::CubeArray,
+                false,
+            ),
             (r#""baseShape": "texture3D""#, Dim::D3, false),
-            (r#""baseShape": "texture2D", "multisample": true"#, Dim::D2, true),
+            (
+                r#""baseShape": "texture2D", "multisample": true"#,
+                Dim::D2,
+                true,
+            ),
         ];
         for (shape, dimension, multisampled) in cases {
             let module = one_param(&format!(
@@ -589,9 +600,18 @@ mod tests {
     #[test]
     fn unsupported_resources_are_reported_by_name() {
         for (ty, detail) in [
-            (r#""kind": "resource", "baseShape": "texture2D", "combined": true"#, "combined"),
-            (r#""kind": "resource", "baseShape": "textureBuffer""#, "textureBuffer"),
-            (r#""kind": "array", "elementCount": 0, "elementType": { "kind": "samplerState" }"#, "unbounded"),
+            (
+                r#""kind": "resource", "baseShape": "texture2D", "combined": true"#,
+                "combined",
+            ),
+            (
+                r#""kind": "resource", "baseShape": "textureBuffer""#,
+                "textureBuffer",
+            ),
+            (
+                r#""kind": "array", "elementCount": 0, "elementType": { "kind": "samplerState" }"#,
+                "unbounded",
+            ),
         ] {
             let json = format!(
                 r#"{{ "parameters": [ {{ "name": "bad", "binding": {{ "kind": "descriptorTableSlot", "index": 0 }},
