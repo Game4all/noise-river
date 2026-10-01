@@ -30,6 +30,8 @@ pub struct GfxContext {
     pub surface: wgpu::Surface<'static>,
     /// Precompiled slang shaders and the pipelines built from them.
     pub pipelines: PipelineManager,
+    /// Tracks whether a surface reconfiguration is pending, because we can't reconfigure the surface while a frame is acquired.
+    pending_surface_reconfiguration: bool,
 }
 
 impl GfxContext {
@@ -99,6 +101,7 @@ impl GfxContext {
             surface_config,
             surface,
             pipelines: PipelineManager::new(compiled_shader_dir()),
+            pending_surface_reconfiguration: false,
         }
     }
 
@@ -111,15 +114,17 @@ impl GfxContext {
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
+        self.pending_surface_reconfiguration = false;
     }
 
     /// Acquires the next render texture.
     /// Returns `None` if the frame can't be rendered to and should be skipped.
-    pub fn begin_frame(&self) -> Option<wgpu::SurfaceTexture> {
+    pub fn begin_frame(&mut self) -> Option<wgpu::SurfaceTexture> {
         match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => Some(frame),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                self.surface.configure(&self.device, &self.surface_config);
+                // queue a reconfiguration for the next frame, because we cannot reconfigure the surface while a render target texture is acquired from it
+                self.pending_surface_reconfiguration = true;
                 Some(frame)
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -133,8 +138,14 @@ impl GfxContext {
     }
 
     /// Presents a texture acquired by [`GfxContext::begin_frame`].
-    pub fn present(&self, frame: wgpu::SurfaceTexture) {
+    /// If a surface reconfiguration was pending, it is done after the frame is presented.
+    pub fn present(&mut self, frame: wgpu::SurfaceTexture) {
         self.queue.present(frame);
+
+        if self.pending_surface_reconfiguration {
+            self.surface.configure(&self.device, &self.surface_config);
+            self.pending_surface_reconfiguration = false;
+        }
     }
 }
 

@@ -26,7 +26,7 @@ pub struct ApplicationContext {
 impl ApplicationContext {
     fn redraw(&mut self) {
         let (Some(window), Some(gfx), Some(egui), Some(flow)) =
-            (&self.window, &self.gfx, &mut self.egui, &mut self.flow)
+            (&self.window, &mut self.gfx, &mut self.egui, &mut self.flow)
         else {
             return;
         };
