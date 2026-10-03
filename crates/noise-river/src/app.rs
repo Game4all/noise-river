@@ -43,9 +43,7 @@ impl ApplicationContext {
                 .create_view(&wgpu::TextureViewDescriptor::default());
 
             // sized from the frame, not from the last resize event
-            flow.resize(
-                &gfx.device,
-                &gfx.pipelines,
+            flow.set_window(
                 [frame.texture.width(), frame.texture.height()],
                 window.scale_factor() as f32,
             );

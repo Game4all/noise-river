@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 
 use egui::{CollapsingHeader, Slider, Ui};
 
-use super::{FlowFieldSimulation, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range};
+use super::{FlowFieldSimulation, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range, ScaleFilter};
 
 impl FlowFieldSimulation {
     /// The controls window. Edits apply from the next frame.
@@ -22,6 +22,9 @@ impl FlowFieldSimulation {
                     .max_height(max_height)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
+                        CollapsingHeader::new("image")
+                            .default_open(true)
+                            .show(ui, |ui| self.image_controls(ui));
                         CollapsingHeader::new("particles and trails")
                             .default_open(true)
                             .show(ui, |ui| self.trail_controls(ui));
@@ -42,7 +45,7 @@ impl FlowFieldSimulation {
         let [width, height] = self.target.size;
         ui.label(format!(
             "{width}x{height} px at {:.2}x  |  {} particles  |  {:.1} MiB  |  {:.0} fps",
-            self.scale_factor,
+            self.target.pixel_scale,
             self.sim.count,
             self.memory_bytes() as f32 / (1024.0 * 1024.0),
             self.stats.fps,
@@ -78,8 +81,8 @@ impl FlowFieldSimulation {
             if ui
                 .add_enabled(!saving, egui::Button::new("export image"))
                 .on_hover_text(
-                    "Saves the image as a PNG in the working directory, at the full resolution \
-                     of the screen.",
+                    "Saves the image as a PNG in the working directory, at the resolution of the \
+                     image.",
                 )
                 .clicked()
             {
@@ -89,6 +92,81 @@ impl FlowFieldSimulation {
         if let Some(status) = &self.export.status {
             ui.label(status);
         }
+    }
+
+    fn image_controls(&mut self, ui: &mut Ui) {
+        const MIN_SIDE: u32 = 16;
+        let max_side = self.max_side;
+        let window_size = self.window_size;
+        let window_density = self.window_density;
+        let draft = &mut self.image_draft;
+        let image = &mut self.image;
+
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut draft[0]).range(MIN_SIDE..=max_side))
+                .on_hover_text("Width of the simulated image, in physical pixels.");
+            ui.label("×");
+            ui.add(egui::DragValue::new(&mut draft[1]).range(MIN_SIDE..=max_side))
+                .on_hover_text("Height of the simulated image, in physical pixels.");
+            ui.label("px");
+        });
+        ui.horizontal(|ui| {
+            let changed = *draft != image.size;
+            if ui
+                .add_enabled(changed, egui::Button::new("apply"))
+                .on_hover_text(
+                    "Rebuilds the simulation at this size. The particles start over, since their \
+                     area changed.",
+                )
+                .clicked()
+            {
+                image.size = *draft;
+            }
+            if ui
+                .button("match window")
+                .on_hover_text("Takes the window's size and scale, and applies them.")
+                .clicked()
+            {
+                image.size = window_size;
+                image.density = window_density;
+                *draft = window_size;
+            }
+        });
+
+        ui.add(
+            Slider::new(&mut image.render_scale, 0.25..=4.0)
+                .logarithmic(true)
+                .text("render scale"),
+        )
+        .on_hover_text(
+            "Multiplies the pixels of the image. The composition stays the same, so a higher scale \
+             is sharper and a lower one is cheaper.",
+        );
+        let [width, height] = image.target_size(max_side);
+        ui.label(format!("→ {width}×{height} px"));
+        let effective = image.effective_scale(max_side);
+        if effective < image.render_scale {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!(
+                    "capped at {effective:.2}x, the GPU can't make a bigger texture than \
+                     {max_side} px on a side."
+                ),
+            );
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("scaling");
+            ui.radio_value(&mut image.filter, ScaleFilter::Nearest, "nearest")
+                .on_hover_text(
+                    "Hard-edged pixels, crisp when enlarging and grainy when shrinking.",
+                );
+            ui.radio_value(&mut image.filter, ScaleFilter::Smooth, "smooth")
+                .on_hover_text(
+                    "Blends pixels when enlarging, and averages them when shrinking, so fine \
+                     strands don't shimmer.",
+                );
+        });
     }
 
     fn trail_controls(&mut self, ui: &mut Ui) {

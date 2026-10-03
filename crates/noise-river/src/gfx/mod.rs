@@ -72,6 +72,8 @@ impl GfxContext {
                 // the 128 MiB default is too small for a big trail history
                 max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
                 max_buffer_size: adapter_limits.max_buffer_size,
+                // the image can be bigger than the window, up to what the GPU makes
+                max_texture_dimension_2d: adapter_limits.max_texture_dimension_2d,
                 ..wgpu::Limits::default()
             },
             ..Default::default()
@@ -165,6 +167,7 @@ pub(crate) fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
             max_immediate_size: 128,
             max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
             max_buffer_size: adapter_limits.max_buffer_size,
+            max_texture_dimension_2d: adapter_limits.max_texture_dimension_2d,
             ..Default::default()
         },
         ..Default::default()

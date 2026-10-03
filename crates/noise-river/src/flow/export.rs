@@ -1,4 +1,4 @@
-//! Saves the trail image as a PNG at the screen's resolution. The composite runs again into an
+//! Saves the trail image as a PNG at its own resolution. The composite runs again into an
 //! `Rgba8Unorm` target, which holds gamma encoded values, so the bytes are PNG ready. The readback
 //! waits for the GPU once. Encoding and the file write run on another thread.
 
@@ -130,8 +130,8 @@ pub(super) fn capture(
         });
         pass.set_pipeline(&pipeline.pipeline);
         pass.set_bind_group(0, composite, &[]);
-        // the target isn't sRGB, so no decode
-        pass.set_immediates(0, &0u32.to_le_bytes());
+        // the target isn't sRGB, and the image is copied 1:1, so no decode and no filter
+        pass.set_immediates(0, bytemuck::cast_slice(&[0u32, 0u32]));
         pass.draw(0..3, 0..1);
     }
     queue.submit([encoder.finish()]);

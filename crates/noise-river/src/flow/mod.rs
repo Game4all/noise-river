@@ -7,7 +7,7 @@
 //! | lifetime  | `flow_lifetime` | compute, per tick | ages them, fades them, kills and respawns them   |
 //! | trails    | `flow_trails`   | compute, per tick | records where every particle is in its trail     |
 //! | draw      | `flow_draw`     | render, per frame | draws every trail whole, as one ribbon per particle |
-//! | composite | `flow_composite`| render, per frame | puts the trail image on the screen               |
+//! | composite | `flow_composite`| render, per frame | stretches the trail image onto the screen         |
 //!
 //! Each particle has its own ring of recent positions, redrawn whole every frame at one opacity.
 //! So a strand fades as one piece, which an accumulating texture can't do: it doesn't know which
@@ -268,9 +268,15 @@ impl Simulation {
     }
 }
 
-/// The trail image, and the composite bind groups that show it.
+/// The trail image, at the size the image settings ask for, and the composite bind groups that show
+/// it.
 struct TrailTarget {
+    /// Texels.
     size: [u32; 2],
+    /// The simulated area in logical pixels.
+    sim_size: [f32; 2],
+    /// Physical pixels per logical pixel, as the draw pass sees them.
+    pixel_scale: f32,
     view: wgpu::TextureView,
     composite: wgpu::BindGroup,
     composite_export: wgpu::BindGroup,
@@ -282,6 +288,8 @@ impl TrailTarget {
         manager: &PipelineManager,
         ids: &Pipelines,
         size: [u32; 2],
+        sim_size: [f32; 2],
+        pixel_scale: f32,
     ) -> Result<Self, PipelineError> {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("flow trails"),
@@ -298,13 +306,23 @@ impl TrailTarget {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // clamps at the edges, and blends linearly for the smooth filter
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("flow trails sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
 
         let bind = |id, label| {
             manager.render_pipeline(id).layout.create_bind_group(
                 device,
                 0,
                 label,
-                [("trails", wgpu::BindingResource::TextureView(&view))],
+                [
+                    ("trails", wgpu::BindingResource::TextureView(&view)),
+                    ("trailSampler", wgpu::BindingResource::Sampler(&sampler)),
+                ],
             )
         };
         let composite = bind(ids.composite, "flow composite")?;
@@ -312,6 +330,8 @@ impl TrailTarget {
 
         Ok(Self {
             size,
+            sim_size,
+            pixel_scale,
             view,
             composite,
             composite_export,
@@ -321,7 +341,17 @@ impl TrailTarget {
 
 pub struct FlowFieldSimulation {
     pub params: FlowParams,
+    pub image: ImageSettings,
     pub stats: Stats,
+    /// The size the image settings' fields show before "apply".
+    pub image_draft: [u32; 2],
+
+    /// The window's size and scale factor, from [`FlowFieldSimulation::set_window`]. "match window"
+    /// uses them.
+    window_size: [u32; 2],
+    window_density: f32,
+    /// Longest texture side the device takes. Caps the render scale.
+    max_side: u32,
 
     ids: Pipelines,
     params_buffer: wgpu::Buffer,
@@ -332,9 +362,6 @@ pub struct FlowFieldSimulation {
     target: TrailTarget,
 
     surface_format: wgpu::TextureFormat,
-    /// Physical per logical pixel. The simulation is in logical pixels (CSS pixels in the html), so
-    /// the look doesn't depend on screen density.
-    scale_factor: f32,
 
     /// Never repeats. Respawns are seeded with it.
     tick: u32,
@@ -345,7 +372,7 @@ pub struct FlowFieldSimulation {
 }
 
 impl FlowFieldSimulation {
-    /// `size` is the size of the surface in physical pixels.
+    /// `size` is the size of the surface in physical pixels. The image starts out at that size.
     pub fn new(
         device: &wgpu::Device,
         manager: &mut PipelineManager,
@@ -355,6 +382,8 @@ impl FlowFieldSimulation {
     ) -> Result<Self, PipelineError> {
         let params = FlowParams::default();
         let ids = Pipelines::create(device, manager, surface_format)?;
+        let max_side = device.limits().max_texture_dimension_2d;
+        let image = ImageSettings::from_window(size, scale_factor);
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("flow params"),
@@ -379,30 +408,35 @@ impl FlowFieldSimulation {
             count,
             capacity,
         )?;
-        let size = size.map(|side| side.max(1));
-        let target = TrailTarget::create(device, manager, &ids, size)?;
+        let target = TrailTarget::create(
+            device,
+            manager,
+            &ids,
+            image.target_size(max_side),
+            image.sim_size(),
+            image.pixel_scale(max_side),
+        )?;
 
         Ok(Self {
             perm_seed: params.noise_seed,
             params,
+            image,
             stats: Stats::default(),
+            image_draft: image.size,
+            window_size: image.size,
+            window_density: scale_factor,
+            max_side,
             ids,
             params_buffer,
             perm_buffer,
             sim,
             target,
             surface_format,
-            scale_factor,
             tick: 0,
             tick_debt: 0.0,
             reset_pending: true,
             export: export::Exporter::default(),
         })
-    }
-
-    /// Size of the simulated area in logical pixels.
-    pub fn sim_size(&self) -> [f32; 2] {
-        self.target.size.map(|side| side as f32 / self.scale_factor)
     }
 
     /// Bytes of GPU memory that the particles and their trails take.
@@ -415,38 +449,27 @@ impl FlowFieldSimulation {
         self.reset_pending = true;
     }
 
-    /// Saves the image at the next frame as a PNG, at the resolution of the screen.
+    /// Saves the image at the next frame as a PNG, at the resolution of the image.
     pub fn request_export(&mut self) {
         self.export.request();
     }
 
-    /// Follows the surface size. Particles start over, as in the html when its window resizes.
-    ///
-    /// # Panics
-    /// If the shaders and bind groups disagree. [`FlowFieldSimulation::new`] fails first.
-    pub fn resize(
-        &mut self,
-        device: &wgpu::Device,
-        manager: &PipelineManager,
-        size: [u32; 2],
-        scale_factor: f32,
-    ) {
+    /// Records the window's size and scale factor, for "match window". The image has its own size,
+    /// so the window's size doesn't change the simulation.
+    pub fn set_window(&mut self, size: [u32; 2], scale_factor: f32) {
         if size[0] == 0 || size[1] == 0 {
             return;
         }
-        if size == self.target.size && scale_factor == self.scale_factor {
-            return;
-        }
-        self.scale_factor = scale_factor;
-        self.target = TrailTarget::create(device, manager, &self.ids, size)
-            .unwrap_or_else(|err| panic!("Failed to build the flow trail target: {err}"));
-        self.reset_pending = true;
+        self.window_size = size;
+        self.window_density = scale_factor;
     }
 
-    /// Applies the `params` changes that need buffers: particle count, trail capacity, noise seed.
+    /// Applies the image settings and the `params` changes that need buffers: particle count, trail
+    /// capacity, noise seed. A new simulated area starts the particles over, as the html does when
+    /// its window resizes. A new render scale only changes the trail texture.
     ///
     /// # Panics
-    /// Same as [`FlowFieldSimulation::resize`].
+    /// If the shaders and bind groups disagree. [`FlowFieldSimulation::new`] fails first.
     pub fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, manager: &PipelineManager) {
         let capacity = self.params.trail_capacity();
         let count = affordable_count(device, &self.params, capacity);
@@ -464,6 +487,21 @@ impl FlowFieldSimulation {
             self.reset_pending = true;
         }
 
+        let sim_size = self.image.sim_size();
+        let size = self.image.target_size(self.max_side);
+        let pixel_scale = self.image.pixel_scale(self.max_side);
+        if sim_size != self.target.sim_size {
+            self.reset_pending = true;
+        }
+        if size != self.target.size
+            || pixel_scale != self.target.pixel_scale
+            || sim_size != self.target.sim_size
+        {
+            self.target =
+                TrailTarget::create(device, manager, &self.ids, size, sim_size, pixel_scale)
+                    .unwrap_or_else(|err| panic!("Failed to build the flow trail target: {err}"));
+        }
+
         if self.params.noise_seed != self.perm_seed {
             let perm = perlin::permutation(self.params.noise_seed);
             queue.write_buffer(&self.perm_buffer, 0, bytemuck::cast_slice(&perm));
@@ -473,9 +511,8 @@ impl FlowFieldSimulation {
         self.export.poll();
     }
 
-    /// Steps the simulation by `dt` seconds, draws, and composites onto `surface`. It must be the
-    /// size given to [`FlowFieldSimulation::resize`]. The surface is cleared, and anything drawn on
-    /// top must load it.
+    /// Steps the simulation by `dt` seconds, draws, and composites onto `surface`, at any size. The
+    /// surface is cleared, and anything drawn on top must load it.
     pub fn frame(
         &mut self,
         device: &wgpu::Device,
@@ -487,8 +524,8 @@ impl FlowFieldSimulation {
         let ticks = self.advance_clock(dt);
 
         let gpu_params = self.params.to_gpu(
-            self.sim_size(),
-            self.scale_factor,
+            self.target.sim_size,
+            self.target.pixel_scale,
             self.sim.count,
             self.sim.capacity,
         );
@@ -640,7 +677,8 @@ impl FlowFieldSimulation {
         pass.set_bind_group(0, &self.target.composite, &[]);
         // sRGB surfaces encode on write, so the composite decodes first
         let decode = u32::from(self.surface_format.is_srgb());
-        pass.set_immediates(0, &decode.to_le_bytes());
+        let smooth = u32::from(self.image.filter == ScaleFilter::Smooth);
+        pass.set_immediates(0, bytemuck::cast_slice(&[decode, smooth]));
         pass.draw(0..3, 0..1);
     }
 }

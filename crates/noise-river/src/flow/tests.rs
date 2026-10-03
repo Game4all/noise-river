@@ -100,6 +100,11 @@ impl Harness {
         )
     }
 
+    /// The surface, read back as rgba8. Its format is whatever the harness made it.
+    fn surface_pixels(&self) -> Vec<u8> {
+        export::read_rgba8(&self.device, &self.queue, &self.surface, SIZE).unwrap()
+    }
+
     /// The trail image, as rgba8 in gamma space, whatever the surface format is.
     fn image(&self) -> Vec<u8> {
         export::capture(
@@ -179,7 +184,7 @@ fn every_pass_builds_and_binds_what_its_shader_declares() {
         .manager
         .render_pipeline(harness.field.ids.composite)
         .layout;
-    assert_eq!(composite.immediate_size, 4, "the sRGB flag");
+    assert_eq!(composite.immediate_size, 8, "the sRGB and smooth flags");
 }
 
 #[test]
@@ -265,7 +270,7 @@ fn a_reset_gives_every_particle_a_trail_at_its_spawn_point() {
         &harness.field.sim.history,
         (harness.field.sim.count * harness.field.sim.capacity) as usize,
     );
-    let sim_size = harness.field.sim_size();
+    let sim_size = harness.field.target.sim_size;
     for (i, p) in particles.iter().enumerate() {
         assert_eq!(
             (p.age, p.trail_len, p.trail_head),
@@ -568,7 +573,7 @@ fn a_density_of_2_draws_the_same_area_at_twice_the_pixels() {
     else {
         return;
     };
-    assert_eq!(harness.field.sim_size(), [500.0, 300.0]);
+    assert_eq!(harness.field.target.sim_size, [500.0, 300.0]);
 
     harness.step(120);
     let image = harness.image();
@@ -630,24 +635,103 @@ fn more_particles_than_a_buffer_can_hold_are_capped() {
 }
 
 #[test]
-fn resizing_makes_a_new_image_and_starts_over() {
+fn the_window_doesnt_change_the_simulation() {
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    harness.step(30);
+    let target_size = harness.field.target.size;
+
+    // a resized window, or one on a screen of another density, keeps the image and the particles
+    let before = harness.particles();
+    harness.field.set_window([400, 200], 2.0);
+    harness.step(1);
+    assert_eq!(harness.field.target.size, target_size);
+    assert_eq!(harness.field.window_size, [400, 200]);
+    assert!(nobody_respawned(&before, &harness.particles()));
+
+    // a minimized window has no size, which is ignored
+    harness.field.set_window([0, 0], 1.0);
+    assert_eq!(harness.field.window_size, [400, 200]);
+}
+
+/// Whether no living particle of `before` respawned by `after`. A respawn sets the age back to 0,
+/// and a particle only respawns after it has died and faded, so a living one can't. Dying ones are
+/// left out: they respawn on schedule.
+fn nobody_respawned(before: &[Particle], after: &[Particle]) -> bool {
+    before.len() == after.len()
+        && before
+            .iter()
+            .zip(after)
+            .all(|(b, a)| b.is_dying() || a.age >= b.age)
+}
+
+#[test]
+fn a_new_image_size_makes_a_new_image_and_starts_over() {
     let Some(mut harness) = Harness::new() else {
         return;
     };
     harness.step(30);
 
-    harness
-        .field
-        .resize(&harness.device, &harness.manager, [400, 200], 1.0);
+    harness.field.image.size = [400, 200];
+    harness.step(1);
     assert_eq!(harness.field.target.size, [400, 200]);
-    assert_eq!(harness.field.sim_size(), [400.0, 200.0]);
-    assert!(harness.field.reset_pending);
+    assert_eq!(harness.field.target.sim_size, [400.0, 200.0]);
+    assert!(harness.particles().iter().all(|p| p.age <= 1.0));
+}
 
-    // a minimized window has no size, which is ignored
-    harness
-        .field
-        .resize(&harness.device, &harness.manager, [0, 0], 1.0);
-    assert_eq!(harness.field.target.size, [400, 200]);
+#[test]
+fn render_scale_changes_the_pixels_and_keeps_the_particles() {
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    harness.step(30);
+    let sim_size = harness.field.target.sim_size;
+
+    let before = harness.particles();
+    harness.field.image.render_scale = 2.0;
+    harness.step(1);
+    assert_eq!(harness.field.target.size, [SIZE[0] * 2, SIZE[1] * 2]);
+    assert_eq!(harness.field.target.sim_size, sim_size);
+    assert!(nobody_respawned(&before, &harness.particles()));
+
+    // the export is the image at its own size
+    let image = harness.image();
+    assert_eq!(image.len(), (SIZE[0] * 2 * SIZE[1] * 2 * 4) as usize);
+}
+
+#[test]
+fn both_filters_show_only_the_background_on_an_empty_image_of_any_size() {
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    // paused and reset: every trail is a single point, so nothing is drawn yet
+    harness.field.params.paused = true;
+    // a 2x image shown at the window's size (shrinking), then a 0.5x one (enlarging)
+    harness.field.image.render_scale = 2.0;
+    harness.field.image.filter = ScaleFilter::Nearest;
+    harness.step(1);
+    let nearest = harness.surface_pixels();
+    harness.field.image.filter = ScaleFilter::Smooth;
+    harness.step(1);
+    let smooth = harness.surface_pixels();
+    harness.field.image.render_scale = 0.5;
+    harness.step(1);
+    let enlarged = harness.surface_pixels();
+
+    // every filter writes every surface texel, so nothing shows the clear color
+    for texel in texels(&nearest)
+        .iter()
+        .chain(texels(&smooth).iter())
+        .chain(texels(&enlarged).iter())
+    {
+        for channel in 0..3 {
+            assert!(
+                texel[channel].abs_diff(BACKGROUND[channel]) <= 1,
+                "{texel:?} isn't the background {BACKGROUND:?}"
+            );
+        }
+    }
 }
 
 #[test]

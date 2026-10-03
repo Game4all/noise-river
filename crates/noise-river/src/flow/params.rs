@@ -239,6 +239,65 @@ impl FlowParams {
     }
 }
 
+/// How the trail image is put on screen when it isn't the size of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScaleFilter {
+    /// Hard-edged pixels.
+    Nearest,
+    /// Bilinear when enlarging, an area average when shrinking, so fine strands don't shimmer.
+    #[default]
+    Smooth,
+}
+
+/// Size of the simulated image. It starts as the window's, then the user sets it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageSettings {
+    /// Physical pixels, before `render_scale`.
+    pub size: [u32; 2],
+    /// Physical pixels per logical pixel. The simulation is in logical pixels, so the look doesn't
+    /// depend on the screen's density.
+    pub density: f32,
+    /// Multiplies the pixel count of `size`. The composition stays the same.
+    pub render_scale: f32,
+    pub filter: ScaleFilter,
+}
+
+impl ImageSettings {
+    /// The image the window asks for: its size and scale factor, at a render scale of 1.
+    pub fn from_window(size: [u32; 2], density: f32) -> Self {
+        Self {
+            size: size.map(|side| side.max(1)),
+            density,
+            render_scale: 1.0,
+            filter: ScaleFilter::default(),
+        }
+    }
+
+    /// The simulated area in logical pixels. The render scale doesn't change it.
+    pub fn sim_size(&self) -> [f32; 2] {
+        self.size.map(|side| side as f32 / self.density)
+    }
+
+    /// `render_scale`, lowered if the longer side would be bigger than `max_side`. Both sides scale
+    /// by the same factor, so the aspect ratio holds.
+    pub fn effective_scale(&self, max_side: u32) -> f32 {
+        let longest = self.size[0].max(self.size[1]) as f32;
+        self.render_scale.min(max_side as f32 / longest)
+    }
+
+    /// Physical pixels per logical pixel of the image as it is drawn.
+    pub fn pixel_scale(&self, max_side: u32) -> f32 {
+        self.density * self.effective_scale(max_side)
+    }
+
+    /// The trail texture's size, in texels.
+    pub fn target_size(&self, max_side: u32) -> [u32; 2] {
+        let scale = self.effective_scale(max_side);
+        self.size
+            .map(|side| ((side as f32 * scale).round() as u32).clamp(1, max_side))
+    }
+}
+
 fn srgb(channel: u8) -> f32 {
     f32::from(channel) / 255.0
 }
@@ -391,6 +450,39 @@ mod tests {
         assert_eq!(gpu.trail_window, 240);
         assert_eq!(gpu.fade_start_ticks, 180.0);
         assert_eq!(gpu.max_travel, 0.7 * 600.0);
+    }
+
+    #[test]
+    fn the_image_starts_as_the_window_and_render_scale_changes_only_the_pixels() {
+        let mut image = ImageSettings::from_window([1000, 600], 2.0);
+        assert_eq!(image.sim_size(), [500.0, 300.0]);
+        assert_eq!(image.target_size(8192), [1000, 600]);
+        assert_eq!(image.pixel_scale(8192), 2.0);
+
+        image.render_scale = 0.5;
+        assert_eq!(image.target_size(8192), [500, 300]);
+        assert_eq!(image.pixel_scale(8192), 1.0);
+        assert_eq!(image.sim_size(), [500.0, 300.0]);
+    }
+
+    #[test]
+    fn render_scale_is_capped_uniformly_so_the_longer_side_fits() {
+        let mut image = ImageSettings::from_window([4000, 1000], 1.0);
+        image.render_scale = 4.0;
+        assert_eq!(image.target_size(8192), [8192, 2048]);
+        assert!((image.pixel_scale(8192) - 2.048).abs() < 1e-5);
+        assert_eq!(image.render_scale, 4.0, "the setting itself is kept");
+    }
+
+    #[test]
+    fn a_tiny_image_is_at_least_one_texel() {
+        let image = ImageSettings {
+            size: [1, 1],
+            density: 1.0,
+            render_scale: 0.25,
+            filter: ScaleFilter::Nearest,
+        };
+        assert_eq!(image.target_size(8192), [1, 1]);
     }
 
     #[test]
