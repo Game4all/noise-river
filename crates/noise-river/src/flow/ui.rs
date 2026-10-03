@@ -1,99 +1,173 @@
 //! The flow field's controls, as in the html's panel, plus the knobs that only `CONFIG` had there.
-//! The html's help text is on hover.
+//! A menu bar on top holds the simulation buttons and readouts, and a settings menu that opens one
+//! window per section. The html's help text is on hover.
 
 use std::ops::RangeInclusive;
 
-use egui::{CollapsingHeader, Slider, Ui};
+use egui::{Align, Layout, Slider, Ui};
 use egui_material_icons::{MaterialIcon, icons::*};
 
 use super::{FlowFieldSimulation, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range, ScaleFilter};
 
-/// A section that starts open, titled with an icon.
-fn icon_section(ui: &mut Ui, icon: MaterialIcon, title: &str, add_contents: impl FnOnce(&mut Ui)) {
-    CollapsingHeader::new(format!("{}  {title}", icon.codepoint))
-        .id_salt(title)
-        .default_open(true)
-        .show(ui, add_contents);
+/// A group of settings, with a window of its own.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum SettingsSection {
+    Image,
+    Trails,
+    Field,
+    Spawn,
+    Look,
+}
+
+impl SettingsSection {
+    pub(super) const ALL: [SettingsSection; 5] = [
+        SettingsSection::Image,
+        SettingsSection::Trails,
+        SettingsSection::Field,
+        SettingsSection::Spawn,
+        SettingsSection::Look,
+    ];
+
+    fn icon(self) -> MaterialIcon {
+        match self {
+            SettingsSection::Image => ICON_IMAGE,
+            SettingsSection::Trails => ICON_GRAIN,
+            SettingsSection::Field => ICON_AIR,
+            SettingsSection::Spawn => ICON_ADD_CIRCLE,
+            SettingsSection::Look => ICON_PALETTE,
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            SettingsSection::Image => "image",
+            SettingsSection::Trails => "particles and trails",
+            SettingsSection::Field => "flow field",
+            SettingsSection::Spawn => "new particles",
+            SettingsSection::Look => "look",
+        }
+    }
 }
 
 impl FlowFieldSimulation {
-    /// The controls window. Edits apply from the next frame.
-    pub fn ui(&mut self, ctx: &egui::Context) {
-        egui::Window::new("flow field")
-            .default_pos([16.0, 16.0])
-            .default_width(380.0)
-            .show(ctx, |ui| {
-                self.status_row(ui);
-                ui.separator();
+    /// The menu bar and the open settings windows. Edits apply from the next frame.
+    pub fn ui(&mut self, ui: &mut Ui) {
+        // not while typing in a text field
+        if !ui.ctx().egui_wants_keyboard_input()
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space))
+        {
+            self.params.paused = !self.params.paused;
+        }
 
-                let max_height = (ctx.content_rect().height() - 140.0).max(160.0);
-                egui::ScrollArea::vertical()
-                    .max_height(max_height)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        icon_section(ui, ICON_IMAGE, "image", |ui| self.image_controls(ui));
-                        icon_section(ui, ICON_GRAIN, "particles and trails", |ui| {
-                            self.trail_controls(ui)
-                        });
-                        icon_section(ui, ICON_AIR, "flow field", |ui| self.field_controls(ui));
-                        icon_section(ui, ICON_ADD_CIRCLE, "new particles", |ui| {
-                            self.spawn_controls(ui)
-                        });
-                        icon_section(ui, ICON_PALETTE, "look", |ui| self.look_controls(ui));
-                    });
+        let frame = egui::Frame::side_top_panel(ui.style())
+            .inner_margin(egui::Margin::symmetric(8, 12));
+        egui::Panel::top("menu bar").frame(frame).show(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                self.sim_controls(ui);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    self.settings_menu(ui);
+                });
             });
+        });
+
+        let ctx = ui.ctx().clone();
+        for (index, section) in SettingsSection::ALL.into_iter().enumerate() {
+            self.section_window(&ctx, section, index);
+        }
     }
 
-    fn status_row(&mut self, ui: &mut Ui) {
+    /// Play and pause, reset and export, then the resolution and the fps.
+    fn sim_controls(&mut self, ui: &mut Ui) {
+        let (icon, hover) = if self.params.paused {
+            (ICON_PLAY_ARROW, "Resumes the simulation.")
+        } else {
+            (ICON_PAUSE, "Pauses the simulation.")
+        };
+        if ui.button(icon.codepoint).on_hover_text(hover).clicked() {
+            self.params.paused = !self.params.paused;
+        }
+        if ui
+            .button(ICON_REPLAY.codepoint)
+            .on_hover_text("Starts every particle over at a random spot.")
+            .clicked()
+        {
+            self.request_reset();
+        }
+        let saving = self.export.is_saving();
+        if ui
+            .add_enabled(!saving, egui::Button::new(ICON_DOWNLOAD.codepoint))
+            .on_hover_text(
+                "Saves the image as a PNG in the working directory, at the resolution of the \
+                 image.",
+            )
+            .clicked()
+        {
+            self.request_export();
+        }
+
+        ui.separator();
         let [width, height] = self.target.size;
-        ui.label(format!(
-            "{width}x{height} px at {:.2}x  |  {} particles  |  {:.1} MiB  |  {:.0} fps",
+        ui.label(format!("{width}×{height} px")).on_hover_text(format!(
+            "At {:.2}x, with {} particles taking {:.1} MiB.",
             self.target.pixel_scale,
             self.sim.count,
             self.memory_bytes() as f32 / (1024.0 * 1024.0),
-            self.stats.fps,
         ));
-        if self.sim.count < self.params.particle_count {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                format!(
-                    "limited to {} particles, the trails of more wouldn't fit in a buffer. \
-                     Lower the max trail length to have more.",
-                    self.sim.count
-                ),
-            );
-        }
+        ui.label(format!("{:.0} fps", self.stats.fps));
 
-        ui.horizontal(|ui| {
-            let label = if self.params.paused {
-                "resume"
-            } else {
-                "pause"
-            };
-            if ui.button(label).clicked() {
-                self.params.paused = !self.params.paused;
-            }
-            if ui
-                .button("respawn")
-                .on_hover_text("Starts every particle over at a random spot.")
-                .clicked()
-            {
-                self.request_reset();
-            }
-            let saving = self.export.is_saving();
-            if ui
-                .add_enabled(!saving, egui::Button::new("export image"))
-                .on_hover_text(
-                    "Saves the image as a PNG in the working directory, at the resolution of the \
-                     image.",
-                )
-                .clicked()
-            {
-                self.request_export();
+        if self.sim.count < self.params.particle_count {
+            ui.colored_label(ui.visuals().warn_fg_color, ICON_WARNING.codepoint)
+                .on_hover_text(self.particle_limit_warning());
+        }
+        if let Some(status) = &self.export.status {
+            ui.weak(status);
+        }
+    }
+
+    fn particle_limit_warning(&self) -> String {
+        format!(
+            "limited to {} particles, the trails of more wouldn't fit in a buffer. \
+             Lower the max trail length to have more.",
+            self.sim.count
+        )
+    }
+
+    /// A button that pops up the sections, each of which opens its window.
+    fn settings_menu(&mut self, ui: &mut Ui) {
+        ui.menu_button(format!("{}  settings", ICON_SETTINGS.codepoint), |ui| {
+            for section in SettingsSection::ALL {
+                let label = format!("{}  {}", section.icon().codepoint, section.title());
+                let open = self.open_sections.contains(&section);
+                if ui.selectable_label(open, label).clicked() {
+                    self.open_sections.insert(section);
+                }
             }
         });
-        if let Some(status) = &self.export.status {
-            ui.label(status);
+    }
+
+    /// `index` only staggers the default positions, so windows opened together don't overlap.
+    fn section_window(&mut self, ctx: &egui::Context, section: SettingsSection, index: usize) {
+        let mut open = self.open_sections.contains(&section);
+        let offset = 24.0 * index as f32;
+        egui::Window::new(format!("{}  {}", section.icon().codepoint, section.title()))
+            .id(egui::Id::new(("section", section.title())))
+            .open(&mut open)
+            .default_pos([16.0 + offset, 48.0 + offset])
+            .default_width(380.0)
+            .vscroll(true)
+            .show(ctx, |ui| self.section_controls(ui, section));
+        if !open {
+            self.open_sections.remove(&section);
+        }
+    }
+
+    fn section_controls(&mut self, ui: &mut Ui, section: SettingsSection) {
+        match section {
+            SettingsSection::Image => self.image_controls(ui),
+            SettingsSection::Trails => self.trail_controls(ui),
+            SettingsSection::Field => self.field_controls(ui),
+            SettingsSection::Spawn => self.spawn_controls(ui),
+            SettingsSection::Look => self.look_controls(ui),
         }
     }
 
@@ -180,6 +254,9 @@ impl FlowFieldSimulation {
     }
 
     fn trail_controls(&mut self, ui: &mut Ui) {
+        if self.sim.count < self.params.particle_count {
+            ui.colored_label(ui.visuals().warn_fg_color, self.particle_limit_warning());
+        }
         let params = &mut self.params;
 
         ui.add(

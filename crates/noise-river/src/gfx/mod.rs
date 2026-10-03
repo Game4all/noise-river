@@ -216,7 +216,7 @@ impl EguiContext {
         window: &Window,
         frame: &wgpu::SurfaceTexture,
         clear_color: Option<wgpu::Color>,
-        add_contents: impl FnOnce(&egui::Context),
+        add_contents: impl FnOnce(&mut egui::Ui),
     ) {
         let view = frame
             .texture
@@ -224,7 +224,15 @@ impl EguiContext {
 
         let raw_input = self.state.take_egui_input(window);
         self.ctx.begin_pass(raw_input);
-        add_contents(&self.ctx);
+        // the same root ui that `Context::run_ui` makes, which panels need
+        let mut root_ui = egui::Ui::new(
+            self.ctx.clone(),
+            egui::Id::new((self.ctx.viewport_id(), "__top_ui")),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::background())
+                .max_rect(self.ctx.viewport_rect()),
+        );
+        add_contents(&mut root_ui);
         let mut full_output = self.ctx.end_pass();
         self.state
             .handle_platform_output(window, full_output.platform_output);

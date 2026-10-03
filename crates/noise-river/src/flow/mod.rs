@@ -23,6 +23,8 @@ mod ui;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashSet;
+
 use wgpu::util::DeviceExt;
 
 use crate::gfx::{
@@ -369,6 +371,8 @@ pub struct FlowFieldSimulation {
     tick_debt: f32,
     reset_pending: bool,
     export: export::Exporter,
+    /// Which settings sections have their window open.
+    open_sections: HashSet<ui::SettingsSection>,
 }
 
 impl FlowFieldSimulation {
@@ -436,6 +440,7 @@ impl FlowFieldSimulation {
             tick_debt: 0.0,
             reset_pending: true,
             export: export::Exporter::default(),
+            open_sections: HashSet::new(),
         })
     }
 

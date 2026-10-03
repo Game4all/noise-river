@@ -51,7 +51,7 @@ impl ApplicationContext {
             flow.frame(&gfx.device, &gfx.queue, &gfx.pipelines, dt, &view);
 
             // egui draws over the flow field instead of clearing it
-            egui.render(gfx, window, &frame, None, |ctx| flow.ui(ctx));
+            egui.render(gfx, window, &frame, None, |ui| flow.ui(ui));
             gfx.present(frame);
         }
         window.request_redraw();
