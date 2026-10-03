@@ -260,6 +260,9 @@ pub struct ImageSettings {
     /// Multiplies the pixel count of `size`. The composition stays the same.
     pub render_scale: f32,
     pub filter: ScaleFilter,
+    /// Takes the window's size and scale factor whenever they change. Off, `size` and `density`
+    /// stay as set.
+    pub follow_window: bool,
 }
 
 impl ImageSettings {
@@ -270,6 +273,7 @@ impl ImageSettings {
             density,
             render_scale: 1.0,
             filter: ScaleFilter::default(),
+            follow_window: true,
         }
     }
 
@@ -481,6 +485,7 @@ mod tests {
             density: 1.0,
             render_scale: 0.25,
             filter: ScaleFilter::Nearest,
+            follow_window: false,
         };
         assert_eq!(image.target_size(8192), [1, 1]);
     }

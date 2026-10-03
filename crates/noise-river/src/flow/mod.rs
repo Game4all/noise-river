@@ -454,14 +454,20 @@ impl FlowFieldSimulation {
         self.export.request();
     }
 
-    /// Records the window's size and scale factor, for "match window". The image has its own size,
-    /// so the window's size doesn't change the simulation.
+    /// Records the window's size and scale factor, for "match window". The image takes them too
+    /// while it follows the window. Otherwise it has its own size, and the window's doesn't change
+    /// the simulation.
     pub fn set_window(&mut self, size: [u32; 2], scale_factor: f32) {
         if size[0] == 0 || size[1] == 0 {
             return;
         }
         self.window_size = size;
         self.window_density = scale_factor;
+        if self.image.follow_window {
+            self.image.size = size;
+            self.image.density = scale_factor;
+            self.image_draft = size;
+        }
     }
 
     /// Applies the image settings and the `params` changes that need buffers: particle count, trail

@@ -635,10 +635,11 @@ fn more_particles_than_a_buffer_can_hold_are_capped() {
 }
 
 #[test]
-fn the_window_doesnt_change_the_simulation() {
+fn a_window_the_image_doesnt_follow_doesnt_change_the_simulation() {
     let Some(mut harness) = Harness::new() else {
         return;
     };
+    harness.field.image.follow_window = false;
     harness.step(30);
     let target_size = harness.field.target.size;
 
@@ -653,6 +654,22 @@ fn the_window_doesnt_change_the_simulation() {
     // a minimized window has no size, which is ignored
     harness.field.set_window([0, 0], 1.0);
     assert_eq!(harness.field.window_size, [400, 200]);
+}
+
+#[test]
+fn the_image_follows_the_window_by_default() {
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    harness.step(1);
+
+    harness.field.set_window([400, 200], 2.0);
+    harness.step(1);
+    assert_eq!(harness.field.image.size, [400, 200]);
+    assert_eq!(harness.field.image.density, 2.0);
+    assert_eq!(harness.field.image_draft, [400, 200]);
+    assert_eq!(harness.field.target.size, [400, 200]);
+    assert_eq!(harness.field.target.sim_size, [200.0, 100.0]);
 }
 
 /// Whether no living particle of `before` respawned by `after`. A respawn sets the age back to 0,

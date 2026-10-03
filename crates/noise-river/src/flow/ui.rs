@@ -105,35 +105,42 @@ impl FlowFieldSimulation {
         let draft = &mut self.image_draft;
         let image = &mut self.image;
 
-        ui.horizontal(|ui| {
-            ui.add(egui::DragValue::new(&mut draft[0]).range(MIN_SIDE..=max_side))
-                .on_hover_text("Width of the simulated image, in physical pixels.");
-            ui.label("×");
-            ui.add(egui::DragValue::new(&mut draft[1]).range(MIN_SIDE..=max_side))
-                .on_hover_text("Height of the simulated image, in physical pixels.");
-            ui.label("px");
-        });
-        ui.horizontal(|ui| {
-            let changed = *draft != image.size;
-            if ui
-                .add_enabled(changed, egui::Button::new("apply"))
-                .on_hover_text(
-                    "Rebuilds the simulation at this size. The particles start over, since their \
-                     area changed.",
-                )
-                .clicked()
-            {
-                image.size = *draft;
-            }
-            if ui
-                .button("match window")
-                .on_hover_text("Takes the window's size and scale, and applies them.")
-                .clicked()
-            {
-                image.size = window_size;
-                image.density = window_density;
-                *draft = window_size;
-            }
+        ui.checkbox(&mut image.follow_window, "follow window")
+            .on_hover_text(
+                "Keeps the image at the window's size and scale. The particles start over when \
+                 the window resizes.",
+            );
+        ui.add_enabled_ui(!image.follow_window, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut draft[0]).range(MIN_SIDE..=max_side))
+                    .on_hover_text("Width of the simulated image, in physical pixels.");
+                ui.label("×");
+                ui.add(egui::DragValue::new(&mut draft[1]).range(MIN_SIDE..=max_side))
+                    .on_hover_text("Height of the simulated image, in physical pixels.");
+                ui.label("px");
+            });
+            ui.horizontal(|ui| {
+                let changed = *draft != image.size;
+                if ui
+                    .add_enabled(changed, egui::Button::new("apply"))
+                    .on_hover_text(
+                        "Rebuilds the simulation at this size. The particles start over, since \
+                         their area changed.",
+                    )
+                    .clicked()
+                {
+                    image.size = *draft;
+                }
+                if ui
+                    .button("match window")
+                    .on_hover_text("Takes the window's size and scale, and applies them.")
+                    .clicked()
+                {
+                    image.size = window_size;
+                    image.density = window_density;
+                    *draft = window_size;
+                }
+            });
         });
 
         ui.add(
