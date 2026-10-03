@@ -8,6 +8,7 @@ mod pipeline;
 pub use error::PipelineError;
 pub use pipeline::*;
 
+use egui_material_icons::initialize as initialize_material_icons;
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use wgpu::InstanceFlags;
 use winit::window::Window;
@@ -185,6 +186,8 @@ pub struct EguiContext {
 impl EguiContext {
     pub fn new(window: &Window, gfx: &GfxContext) -> Self {
         let ctx = egui::Context::default();
+        initialize_material_icons(&ctx);
+
         let state = egui_winit::State::new(
             ctx.clone(),
             egui::ViewportId::ROOT,

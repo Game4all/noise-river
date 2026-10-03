@@ -4,8 +4,17 @@
 use std::ops::RangeInclusive;
 
 use egui::{CollapsingHeader, Slider, Ui};
+use egui_material_icons::{MaterialIcon, icons::*};
 
 use super::{FlowFieldSimulation, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range, ScaleFilter};
+
+/// A section that starts open, titled with an icon.
+fn icon_section(ui: &mut Ui, icon: MaterialIcon, title: &str, add_contents: impl FnOnce(&mut Ui)) {
+    CollapsingHeader::new(format!("{}  {title}", icon.codepoint))
+        .id_salt(title)
+        .default_open(true)
+        .show(ui, add_contents);
+}
 
 impl FlowFieldSimulation {
     /// The controls window. Edits apply from the next frame.
@@ -22,21 +31,15 @@ impl FlowFieldSimulation {
                     .max_height(max_height)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        CollapsingHeader::new("image")
-                            .default_open(true)
-                            .show(ui, |ui| self.image_controls(ui));
-                        CollapsingHeader::new("particles and trails")
-                            .default_open(true)
-                            .show(ui, |ui| self.trail_controls(ui));
-                        CollapsingHeader::new("flow field")
-                            .default_open(true)
-                            .show(ui, |ui| self.field_controls(ui));
-                        CollapsingHeader::new("new particles")
-                            .default_open(true)
-                            .show(ui, |ui| self.spawn_controls(ui));
-                        CollapsingHeader::new("look")
-                            .default_open(true)
-                            .show(ui, |ui| self.look_controls(ui));
+                        icon_section(ui, ICON_IMAGE, "image", |ui| self.image_controls(ui));
+                        icon_section(ui, ICON_GRAIN, "particles and trails", |ui| {
+                            self.trail_controls(ui)
+                        });
+                        icon_section(ui, ICON_AIR, "flow field", |ui| self.field_controls(ui));
+                        icon_section(ui, ICON_ADD_CIRCLE, "new particles", |ui| {
+                            self.spawn_controls(ui)
+                        });
+                        icon_section(ui, ICON_PALETTE, "look", |ui| self.look_controls(ui));
                     });
             });
     }

@@ -8,6 +8,7 @@ publish.workspace = true
 winit = { workspace = true }
 wgpu = { workspace = true }
 egui = { workspace = true }
+egui_material_icons = { workspace = true }
 egui-wgpu = { workspace = true }
 egui-winit = { workspace = true }
 pollster = { workspace = true }
