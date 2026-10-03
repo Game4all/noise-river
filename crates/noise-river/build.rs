@@ -48,14 +48,32 @@ fn main() {
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "slang"));
 
+    let mut failed = false;
     for source in sources {
-        if !compile(&slangc, &shader_dir, &source, &out_dir) {
-            // slangc is not installed, so there is no point in trying the other shaders
-            return;
+        match compile(&slangc, &shader_dir, &source, &out_dir) {
+            Ok(()) => {}
+            Err(CompileError::Source(stderr)) => {
+                failed = true;
+                // output::error panics on newlines, so we need to hack this by emitting one line per call
+                output::error(&format!("slangc failed to compile {}:", source.display()));
+                for line in stderr.lines() {
+                    output::error(line);
+                }
+            }
+            Err(CompileError::Launch(err)) => {
+                // slangc is not runnable, so there is no point in trying the other shaders
+                output::error(&format!(
+                    "Failed to find slang in the PATH or launch it from SLANGC: {err}"
+                ));
+                std::process::exit(1);
+            }
         }
     }
 
-    install(&out_dir);
+    // a failed shader leaves the executable's shaders as they were; the errors above fail the build
+    if !failed {
+        install(&out_dir);
+    }
 }
 
 /// Copies the compiled shaders to the directory that the executable is built in.
@@ -78,11 +96,24 @@ fn install(out_dir: &Path) {
     }
 }
 
-/// Returns `false` if slangc could not be launched at all.
-fn compile(slangc: &Path, shader_dir: &Path, source: &Path, out_dir: &Path) -> bool {
+/// Why a shader failed to compile.
+enum CompileError {
+    /// slangc could not be launched (not in PATH, or a bad SLANGC)
+    Launch(std::io::Error),
+    /// source contains errors, held in the string
+    Source(String),
+}
+
+/// Compiles one shader. Errors are returned for the caller to report.
+fn compile(
+    slangc: &Path,
+    shader_dir: &Path,
+    source: &Path,
+    out_dir: &Path,
+) -> Result<(), CompileError> {
     let stem = source.file_stem().unwrap().to_string_lossy();
 
-    let result = Command::new(slangc)
+    let out = Command::new(slangc)
         .arg(source)
         .args(WGPU_SPIRV_FLAGS)
         .arg("-I")
@@ -91,24 +122,14 @@ fn compile(slangc: &Path, shader_dir: &Path, source: &Path, out_dir: &Path) -> b
         .arg(out_dir.join(format!("{stem}.spv")))
         .arg("-reflection-json")
         .arg(out_dir.join(format!("{stem}.json")))
-        .output();
+        .output()
+        .map_err(CompileError::Launch)?;
 
-    match result {
-        Ok(out) if out.status.success() => true,
-        Ok(out) => {
-            output::error(&format!(
-                "slangc failed on {}:\n{}",
-                source.display(),
-                String::from_utf8_lossy(&out.stderr)
-            ));
-            true
-        }
-        Err(err) => {
-            output::error(&format!(
-                "could not run slangc ({err}), the shaders next to the executable are left as they were. \
-                 Install it or point the SLANGC env var to it."
-            ));
-            false
-        }
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(CompileError::Source(
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ))
     }
 }
