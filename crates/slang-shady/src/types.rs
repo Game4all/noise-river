@@ -1,5 +1,4 @@
-//! What a shader declares, in terms that don't depend on a graphics API. The caller maps these to
-//! whatever its API calls them.
+//! What a shader declares, in API-neutral terms. Callers map them to their own API.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShaderStage {
@@ -21,8 +20,7 @@ pub enum TextureDimension {
 /// A `(descriptor set, binding)` pair.
 pub type Slot = (u32, u32);
 
-/// The sample type as far as the reflection json can tell. Depth textures are only recognizable in
-/// the SPIR-V, so [`SampleType::Depth`] is only ever reported when the binary was provided.
+/// Sample type from the json. [`SampleType::Depth`] only comes from the SPIR-V.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SampleType {
     Float { filterable: bool },
@@ -39,7 +37,7 @@ pub enum BindingKind {
         read_only: bool,
     },
     Sampler {
-        /// A sampler used for depth comparison. Only the SPIR-V can tell, it is `false` without it.
+        /// Depth comparison. Only the SPIR-V shows it, so `false` without it.
         comparison: bool,
     },
     Texture {
@@ -47,13 +45,13 @@ pub enum BindingKind {
         sample_type: SampleType,
         multisampled: bool,
     },
-    /// The format and the access aren't in the json, they come from the SPIR-V.
+    /// Format and access come from the SPIR-V.
     StorageTexture {
         dimension: TextureDimension,
-        /// `None` without the SPIR-V, when the image format is `Unknown` or has no [`StorageFormat`],
-        /// and when the compiler removed the binding from the binary.
+        /// `None` without the SPIR-V, for `Unknown` or unmapped formats, or if the binding was
+        /// optimized out.
         format: Option<StorageFormat>,
-        /// [`StorageAccess::ReadWrite`] unless the SPIR-V shows that the shader only reads or writes.
+        /// [`StorageAccess::ReadWrite`] unless the SPIR-V shows read-only or write-only.
         access: StorageAccess,
     },
 }
@@ -65,8 +63,7 @@ pub enum StorageAccess {
     ReadWrite,
 }
 
-/// The storage image formats a SPIR-V `OpTypeImage` can name, minus the ones without an equivalent
-/// in common graphics APIs.
+/// Storage image formats from SPIR-V's `OpTypeImage`, minus those with no common API equivalent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StorageFormat {
     Rgba32Float,

@@ -9,27 +9,23 @@ use build_rs::{input, output};
 const SHADER_DIR: &str = "assets/shaders";
 const COMPILED_DIR: &str = "shaders";
 
-/// slangc flags that make the SPIR-V something wgpu's Vulkan backend can take through passthrough.
-/// The order matters, `-profile` applies to the `-target` on its left.
+/// slangc flags for wgpu's Vulkan passthrough. Order matters: `-profile` applies to the
+/// `-target` on its left.
 const WGPU_SPIRV_FLAGS: &[&str] = &[
     "-target",
     "spirv",
-    // wgpu itself generates SPIR-V 1.5 on Vulkan 1.2 devices (1.3 on 1.1, 1.6 on 1.3), so that's the
-    // version to stay at. It's pinned so that a slangc update can't raise its default under us, and
-    // 1.4 or later is also what the pipeline manager needs to see which bindings a stage uses.
+    // Pinned so a slangc update can't raise it. wgpu emits 1.5 on Vulkan 1.2. 1.4+ is needed for
+    // the binding usage scan.
     "-profile",
     "spirv_1_5",
-    // no detour through glsl, the reflection json describes what this emitter generates
+    // no glsl detour: the reflection json describes this emitter's output
     "-emit-spirv-directly",
-    // the pipeline manager looks entry points up by their name in the source
+    // entry points are looked up by name
     "-fvk-use-entrypoint-name",
 ];
 
-/// Compiles every top-level `assets/shaders/*.slang` to SPIR-V with slangc, next to a reflection JSON.
-/// Shared code lives in `assets/shaders/lib` and is only reachable through `import` / `#include`.
-///
-/// The output goes to `OUT_DIR`, then gets copied to `<target dir>/<profile>/shaders`, which is
-/// where the executable is, so that the app finds the shaders wherever the source tree is.
+/// Compiles each top-level `assets/shaders/*.slang` to `.spv` and `.json` in `OUT_DIR`, then
+/// installs them next to the executable. `lib/` is only reached through `import`.
 fn main() {
     let manifest_dir = input::cargo_manifest_dir();
     let shader_dir = manifest_dir.join(SHADER_DIR);
@@ -42,8 +38,7 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("slangc"));
 
-    // OUT_DIR sticks around between builds, start clean so that shaders that were deleted or
-    // renamed don't get installed again
+    // OUT_DIR persists between builds: start clean so removed shaders don't get installed
     let _ = fs::remove_dir_all(&out_dir);
     fs::create_dir_all(&out_dir).expect("Failed to create the shader output directory");
 
@@ -65,15 +60,14 @@ fn main() {
 
 /// Copies the compiled shaders to the directory that the executable is built in.
 fn install(out_dir: &Path) {
-    // OUT_DIR is `<target dir>/<profile>/build/<package>-<hash>/out`, and cargo doesn't give the
-    // profile directory itself to build scripts. That's `--target` proof, it's in the path too.
+    // no profile dir from cargo: OUT_DIR is `<target>/[<triple>/]<profile>/build/<pkg>-<hash>/out`
     let bin_dir = input::out_dir()
         .ancestors()
         .nth(3)
         .expect("OUT_DIR is not inside a target directory")
         .join(COMPILED_DIR);
 
-    // start over so that shaders that were deleted or renamed don't stay around
+    // start over: drop stale shaders
     let _ = fs::remove_dir_all(&bin_dir);
     fs::create_dir_all(&bin_dir).expect("Failed to create the shader directory");
 

@@ -1,9 +1,7 @@
-// State shared by every pass of the flow field simulation: the particle layout, the parameters and the
-// respawn logic. Mirrors flow/params.rs, keep the two in sync.
+// Shared by every flow pass: particle layout, parameters, respawn. Mirrors flow/params.rs.
 //
-// The trail of a particle is a ring buffer of packed positions in a separate `history` buffer that
-// the passes that need it declare themselves. The parameters are declared here since every pass
-// reads them, they are always the first binding of set 0.
+// Trails are ring buffers of packed positions in the `history` buffer, which the passes that need
+// it declare themselves. `params` is here since every pass reads it: always set 0, binding 0.
 
 import rng;
 
@@ -13,15 +11,15 @@ public static const uint FLAG_RESPAWNED = 2u;  // lifetime gave the particle a n
 public static const uint MAX_PALETTES = 16u;
 public static const uint MAX_PALETTE_STOPS = 64u;
 
-// Trail points are stored as two unorm16 relative to the simulation area grown by this margin, the
-// particle that is about to die is usually a few pixels off screen and its last point still counts.
+// Trail points are unorm16 over the area grown by this margin, so a particle that dies just off
+// screen keeps its last point.
 static const float TRAIL_MARGIN = 16.0;
 
-/// 64 bytes, and there is no implicit padding.
+/// 64 bytes, no implicit padding.
 public struct Particle
 {
     public float2 pos;             // simulation pixels
-    public float angle;            // radians, the heading eases toward the noise target
+    public float angle;            // radians
     public float speed;            // pixels per tick
     public float size;             // stroke width in simulation pixels
     public float age;              // ticks since the spawn
@@ -37,7 +35,7 @@ public struct Particle
     public uint pad;
 };
 
-/// std140, every row is 16 bytes and arrays only hold 4 component vectors.
+/// std140: 16-byte rows, arrays of vec4 only.
 public struct SimParams
 {
     public float2 simSize;         // logical pixels
@@ -88,8 +86,7 @@ public float3 unpackColor(uint c)
     return float3(float(c & 255u), float((c >> 8u) & 255u), float((c >> 16u) & 255u)) / 255.0;
 }
 
-/// A color at t in 0..1 along the gradient of one palette, an lerp between the two stops that
-/// straddle t in sRGB space, same as `sampleGradient` in the html.
+/// Lerps between the two stops around t in 0..1, in sRGB, like `sampleGradient` in the html.
 float3 samplePalette(uint palette, float t)
 {
     uint first = params.palettes[palette].x;
@@ -118,8 +115,8 @@ public float2 unpackPos(uint packed)
 
 // ---- lifecycle ----
 
-/// Gives the particle a new life at a random spot. `tick` only has to differ between the times that
-/// the same particle is respawned. The trail is reset by the trails pass, which sees the flag.
+/// New life at a random spot. `tick` only has to differ between respawns of one particle. The
+/// trails pass resets the trail on FLAG_RESPAWNED.
 public void respawn(inout Particle p, uint index, uint tick)
 {
     Rng rng = makeRng(index, tick, params.seed);
@@ -152,8 +149,8 @@ public void respawn(inout Particle p, uint index, uint tick)
     p.pad = 0u;
 }
 
-/// Opacity of a strand as it ages. Fully opaque until `fadeStartTicks`, then linearly down to 0 as the
-/// particle reaches the end of its life, see `ageFadeMultiplier` in the html.
+/// Strand opacity by age: 1 until `fadeStartTicks`, then linear to 0 at the end of life. Matches
+/// `ageFadeMultiplier` in the html.
 public float ageFade(float age, float life)
 {
     if (age <= params.fadeStartTicks)

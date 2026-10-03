@@ -1,8 +1,7 @@
 // Pass 5, once per frame: puts the trail image on the screen.
 //
-// The strands are blended in gamma space like a canvas does, so the image holds gamma encoded
-// values. An sRGB swapchain encodes what it is given, so it needs those decoded first, or the image
-// comes out washed out. The export target is a plain unorm texture that takes them as they are.
+// The trail image is gamma encoded, like the canvas it mirrors. An sRGB surface encodes again on
+// write, so it gets the values decoded first (`decodeSrgb`). The export target doesn't.
 
 [[vk::binding(0, 0)]] Texture2D<float4> trails;
 

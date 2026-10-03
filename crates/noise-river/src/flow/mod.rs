@@ -1,5 +1,5 @@
-//! A Perlin flow field made of particles, simulated and drawn on the GPU. It is the same simulation as
-//! flow_field_example.html, in passes that are all slang shaders (`assets/shaders/flow_*.slang`):
+//! A Perlin flow field of particles, simulated and drawn on the GPU. It matches
+//! flow_field_example.html. The passes are slang shaders (`assets/shaders/flow_*.slang`):
 //!
 //! | pass      | shader          | runs             | does                                              |
 //! |-----------|-----------------|------------------|---------------------------------------------------|
@@ -9,12 +9,11 @@
 //! | draw      | `flow_draw`     | render, per frame | draws every trail whole, as one ribbon per particle |
 //! | composite | `flow_composite`| render, per frame | puts the trail image on the screen               |
 //!
-//! Every particle keeps its own ring buffer of recent positions, and the draw pass redraws each of them
-//! in full every frame, with one opacity for the whole strand. That is what lets a strand fade as one
-//! piece as its particle ages, which a texture that trails accumulate in can't do: it doesn't
-//! remember which particle a pixel came from.
+//! Each particle has its own ring of recent positions, redrawn whole every frame at one opacity.
+//! So a strand fades as one piece, which an accumulating texture can't do: it doesn't know which
+//! particle drew a pixel.
 //!
-//! The simulation ticks at a fixed 60 Hz, so it runs the same whatever the frame rate is.
+//! The simulation ticks at a fixed 60 Hz, whatever the frame rate.
 
 mod export;
 mod params;
@@ -33,20 +32,19 @@ use crate::gfx::{
 
 pub use params::*;
 
-/// The strands are blended into this, in gamma space like a canvas does. Half floats keep the many
-/// faint strokes on top of each other from banding, which 8 bits per channel would.
+/// Strands blend here in gamma space, like a canvas. Half floats avoid the banding that 8 bits
+/// would show under many faint strokes.
 const TRAIL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// What the export is rendered to, and what a PNG holds.
+/// Export target, which a PNG holds as is.
 const EXPORT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// Ticks that one frame catches up on at most, so that a stall is skipped and not run at once.
+/// Most ticks one frame catches up on. The rest of a stall is skipped.
 const MAX_TICKS_PER_FRAME: u32 = 8;
-/// The trail history of all particles can't take more than this, and neither than a buffer binding can.
+/// Cap on the trail history, which must also fit a buffer binding.
 const MAX_HISTORY_BYTES: u64 = 1 << 30;
 const MAX_PARTICLES: u32 = 4_000_000;
 
 const PARTICLE_BYTES: u64 = std::mem::size_of::<Particle>() as u64;
-/// One packed position.
 const TRAIL_POINT_BYTES: u64 = 4;
 
 /// How the simulation is doing, for the UI.
@@ -156,7 +154,7 @@ impl Pipelines {
     }
 }
 
-/// The particles and their trails, which are sized by the particle count and the trail capacity.
+/// Particles and their trail history, sized by count and capacity.
 struct Simulation {
     count: u32,
     capacity: u32,
@@ -183,7 +181,7 @@ impl Simulation {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size,
-                // copying out is for the tests
+                // COPY_SRC: test readback
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             })
@@ -270,7 +268,7 @@ impl Simulation {
     }
 }
 
-/// The image that the strands are drawn to, and what puts it on the screen.
+/// The trail image, and the composite bind groups that show it.
 struct TrailTarget {
     size: [u32; 2],
     view: wgpu::TextureView,
@@ -334,13 +332,13 @@ pub struct FlowFieldSimulation {
     target: TrailTarget,
 
     surface_format: wgpu::TextureFormat,
-    /// Physical pixels per logical pixel. The simulation runs in logical pixels, like the html does
-    /// in CSS pixels, so a look doesn't depend on the density of the screen.
+    /// Physical per logical pixel. The simulation is in logical pixels (CSS pixels in the html), so
+    /// the look doesn't depend on screen density.
     scale_factor: f32,
 
-    /// Counts up forever, the respawns of the shaders are seeded with it.
+    /// Never repeats. Respawns are seeded with it.
     tick: u32,
-    /// Ticks that the time since the last frame is worth, and that haven't been run yet.
+    /// Fractional ticks owed to the clock.
     tick_debt: f32,
     reset_pending: bool,
     export: export::Exporter,
@@ -422,12 +420,10 @@ impl FlowFieldSimulation {
         self.export.request();
     }
 
-    /// Follows the surface. The trail image is as big as it, and the particles start over in the new
-    /// area, like they do in the html when its window changes size.
+    /// Follows the surface size. Particles start over, as in the html when its window resizes.
     ///
     /// # Panics
-    /// If the flow shaders and the bind groups built here disagree about the bindings. That would
-    /// have failed in [`FlowField::new`] already.
+    /// If the shaders and bind groups disagree. [`FlowFieldSimulation::new`] fails first.
     pub fn resize(
         &mut self,
         device: &wgpu::Device,
@@ -447,11 +443,10 @@ impl FlowFieldSimulation {
         self.reset_pending = true;
     }
 
-    /// Applies the changes of `params` that need buffers to be made or written again: the count of
-    /// particles, the capacity of their trails, and the noise seed.
+    /// Applies the `params` changes that need buffers: particle count, trail capacity, noise seed.
     ///
     /// # Panics
-    /// Same as [`FlowField::resize`].
+    /// Same as [`FlowFieldSimulation::resize`].
     pub fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, manager: &PipelineManager) {
         let capacity = self.params.trail_capacity();
         let count = affordable_count(device, &self.params, capacity);
@@ -478,9 +473,9 @@ impl FlowFieldSimulation {
         self.export.poll();
     }
 
-    /// Runs the simulation for the `dt` seconds since the last frame, draws the strands and puts them
-    /// on `surface`, which has to be the size that [`FlowField::resize`] was given. The surface is
-    /// cleared, and whatever draws on top of it (the UI) has to load it.
+    /// Steps the simulation by `dt` seconds, draws, and composites onto `surface`. It must be the
+    /// size given to [`FlowFieldSimulation::resize`]. The surface is cleared, and anything drawn on
+    /// top must load it.
     pub fn frame(
         &mut self,
         device: &wgpu::Device,
@@ -522,19 +517,19 @@ impl FlowFieldSimulation {
     fn advance_clock(&mut self, dt: f32) -> u32 {
         let dt = dt.clamp(0.0, 0.25);
         if dt > 0.0 {
-            // a moving average, one frame alone would make the number in the UI unreadable
+            // smoothed for display
             self.stats.fps += (1.0 / dt - self.stats.fps) * 0.05;
         }
 
         if !self.params.paused {
             self.tick_debt += dt * TICKS_PER_SECOND * self.params.time_scale;
         }
-        // the epsilon keeps a display at exactly 60 Hz from alternating between 0 and 2 ticks
+        // epsilon: a 60 Hz display would otherwise alternate between 0 and 2 ticks
         let due = (self.tick_debt + 1e-3).floor().max(0.0) as u32;
         let ticks = due.min(MAX_TICKS_PER_FRAME);
         self.tick_debt -= ticks as f32;
         if due > MAX_TICKS_PER_FRAME {
-            // a stall is skipped, not caught up on over the frames after it
+            // a stall is dropped, not caught up on
             self.tick_debt = 0.0;
         }
         self.stats.ticks_last_frame = ticks;
@@ -563,8 +558,7 @@ impl FlowFieldSimulation {
             timestamp_writes: None,
         });
 
-        // Passes in the same compute pass see what the one before them wrote, wgpu puts the barriers
-        // between the dispatches.
+        // wgpu puts barriers between dispatches, so each pass sees the one before's writes.
         if std::mem::take(&mut self.reset_pending) {
             self.tick = self.tick.wrapping_add(1);
             pass.set_pipeline(&spawn.pipeline);
@@ -572,7 +566,7 @@ impl FlowFieldSimulation {
             pass.set_immediates(0, &self.tick.to_le_bytes());
             pass.dispatch_workgroups(groups(spawn), 1, 1);
 
-            // records the spawn points, so that every particle has a trail to start from
+            // records spawn points: every particle needs a trail to start from
             pass.set_pipeline(&trails.pipeline);
             pass.set_bind_group(0, &self.sim.trails, &[]);
             pass.dispatch_workgroups(groups(trails), 1, 1);
@@ -610,7 +604,7 @@ impl FlowFieldSimulation {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    // the target holds gamma encoded values, the background is one of them
+                    // gamma encoded, like the rest of the target
                     load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
                     store: wgpu::StoreOp::Store,
                 },
@@ -619,8 +613,7 @@ impl FlowFieldSimulation {
         });
         pass.set_pipeline(&manager.render_pipeline(self.ids.draw).pipeline);
         pass.set_bind_group(0, &self.sim.draw, &[]);
-        // a strip of two vertices per point of the trail, plus one extra point past each end for the
-        // round caps (see flow_draw.slang), for every particle
+        // two vertices per point, plus one past each end for the caps (flow_draw.slang)
         pass.draw(0..2 * (trail_window + 2), 0..self.sim.count);
     }
 
@@ -645,15 +638,14 @@ impl FlowFieldSimulation {
         });
         pass.set_pipeline(&manager.render_pipeline(self.ids.composite).pipeline);
         pass.set_bind_group(0, &self.target.composite, &[]);
-        // an sRGB surface encodes what it is given, the image is encoded already
+        // sRGB surfaces encode on write, so the composite decodes first
         let decode = u32::from(self.surface_format.is_srgb());
         pass.set_immediates(0, &decode.to_le_bytes());
         pass.draw(0..3, 0..1);
     }
 }
 
-/// How many particles fit, which is what `params` asks for unless the history of their trails, or
-/// their own buffer, would be bigger than a storage buffer binding is allowed to be.
+/// `params.particle_count`, clamped so neither buffer exceeds what a storage binding allows.
 fn affordable_count(device: &wgpu::Device, params: &FlowParams, capacity: u32) -> u32 {
     let limits = device.limits();
     let budget = limits

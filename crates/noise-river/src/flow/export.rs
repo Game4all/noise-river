@@ -1,9 +1,6 @@
-//! Saves the trail image as a PNG, at the resolution of the screen like the html does.
-//!
-//! The image is rendered again through the composite pass to a plain unorm texture. What it holds is
-//! gamma encoded already, so those bytes are the sRGB ones that a PNG wants, without the decode that
-//! an sRGB swapchain needs. The read back waits for the GPU once, the encoding and the file are done
-//! on another thread.
+//! Saves the trail image as a PNG at the screen's resolution. The composite runs again into an
+//! `Rgba8Unorm` target, which holds gamma encoded values, so the bytes are PNG ready. The readback
+//! waits for the GPU once. Encoding and the file write run on another thread.
 
 use std::{
     fs::File,
@@ -21,7 +18,7 @@ type Outcome = Result<PathBuf, String>;
 
 #[derive(Default)]
 pub struct Exporter {
-    /// Where the files go, the working directory unless it is set.
+    /// Output directory. Empty means the working directory.
     pub dir: PathBuf,
     requested: bool,
     saving: Option<mpsc::Receiver<Outcome>>,
@@ -42,7 +39,7 @@ impl Exporter {
         self.saving.is_some()
     }
 
-    /// Picks up the result of the thread that writes the file, once it is done.
+    /// Takes the writer thread's result once it is ready.
     pub fn poll(&mut self) {
         let Some(saving) = &self.saving else {
             return;
@@ -71,7 +68,7 @@ impl Exporter {
         size: [u32; 2],
     ) {
         if self.is_saving() {
-            return; // one at a time, a second click while it is busy does nothing
+            return; // one at a time
         }
         match capture(device, queue, pipeline, composite, size) {
             Ok(pixels) => {
@@ -88,8 +85,7 @@ impl Exporter {
     }
 }
 
-/// Renders the image once more into an `Rgba8Unorm` texture and reads it back, as `width * height`
-/// rows of tightly packed rgba8 bytes. Blocks until the GPU is done with it.
+/// Renders the composite into an `Rgba8Unorm` texture and reads it back as tightly packed rgba8.
 pub(super) fn capture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -134,7 +130,7 @@ pub(super) fn capture(
         });
         pass.set_pipeline(&pipeline.pipeline);
         pass.set_bind_group(0, composite, &[]);
-        // no sRGB decode, the target is not an sRGB format
+        // the target isn't sRGB, so no decode
         pass.set_immediates(0, &0u32.to_le_bytes());
         pass.draw(0..3, 0..1);
     }
@@ -143,8 +139,7 @@ pub(super) fn capture(
     read_rgba8(device, queue, &texture, size)
 }
 
-/// Reads back a texture with 4 bytes per texel, as `width * height` rows of tightly packed bytes.
-/// The texture needs `COPY_SRC`. Blocks until the GPU is done with it.
+/// Reads back a 4 bytes per texel texture as tightly packed rows. Needs `COPY_SRC`.
 pub(super) fn read_rgba8(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -153,7 +148,6 @@ pub(super) fn read_rgba8(
 ) -> Result<Vec<u8>, String> {
     let [width, height] = size;
 
-    // rows have to start at a multiple of 256 bytes in a buffer that a texture is copied to
     let row_bytes = width * 4;
     let padded_row_bytes = row_bytes.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -228,7 +222,7 @@ pub(super) fn write_png(path: &Path, size: [u32; 2], rgba: &[u8]) -> Result<(), 
     let file = File::create(path).map_err(|err| format!("{}: {err}", path.display()))?;
 
     let mut encoder = png::Encoder::new(BufWriter::new(file), size[0], size[1]);
-    // the image is opaque, so the alpha isn't worth its bytes
+    // opaque image, so no alpha
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);

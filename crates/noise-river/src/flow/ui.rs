@@ -1,5 +1,5 @@
-//! The controls of the flow field, the same ones as the panel of flow_field_example.html, and the
-//! knobs that `CONFIG` there only had in code. The help text of the html is on hover here.
+//! The flow field's controls, as in the html's panel, plus the knobs that only `CONFIG` had there.
+//! The html's help text is on hover.
 
 use std::ops::RangeInclusive;
 
@@ -8,7 +8,7 @@ use egui::{CollapsingHeader, Slider, Ui};
 use super::{FlowFieldSimulation, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range};
 
 impl FlowFieldSimulation {
-    /// The window with all the controls. Changes to the parameters are picked up by the next frame.
+    /// The controls window. Edits apply from the next frame.
     pub fn ui(&mut self, ctx: &egui::Context) {
         egui::Window::new("flow field")
             .default_pos([16.0, 16.0])
@@ -259,7 +259,7 @@ impl FlowFieldSimulation {
     }
 }
 
-/// Two sliders, for the ends of a range that the one that was moved keeps in order.
+/// Min and max sliders that keep `min <= max`, pushing the other end.
 fn range_sliders(
     ui: &mut Ui,
     name: &str,

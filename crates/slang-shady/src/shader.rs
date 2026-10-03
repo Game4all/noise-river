@@ -13,9 +13,8 @@ use crate::{
     types::{BindingKind, SampleType, ShaderStage, Slot, StorageAccess, VertexFormat},
 };
 
-/// The name of the implicit uniform buffer that slang makes for loose `uniform` globals. The
-/// reflection json doesn't list it, so it is only in [`ShaderReflection::bindings`] when the SPIR-V
-/// was provided.
+/// Name of the implicit buffer for loose `uniform` globals. Only in [`ShaderReflection::bindings`]
+/// with the SPIR-V, since the json doesn't list it.
 pub const GLOBALS_NAME: &str = "$Globals";
 
 #[derive(Debug, Clone)]
@@ -50,9 +49,8 @@ pub struct EntryPoint {
     pub workgroup_size: [u32; 3],
     /// In location order.
     pub vertex_inputs: Vec<VertexInput>,
-    /// The slots that the entry point really uses, as opposed to the globals that reflection lists
-    /// whether or not they are used. `None` without the SPIR-V. Only reliable from SPIR-V 1.4 on,
-    /// which is when entry point interfaces started listing every global variable that is used.
+    /// Slots the entry point uses, unlike the globals reflection lists regardless. `None` without
+    /// the SPIR-V. Needs SPIR-V 1.4+.
     pub used_bindings: Option<HashSet<Slot>>,
 }
 
@@ -65,22 +63,18 @@ impl EntryPoint {
     }
 }
 
-/// What a shader declares: its bindings, push constants and entry points.
-///
-/// The reflection json that `slangc -reflection-json` writes is enough for most of it. Passing the
-/// SPIR-V binary as well fills in what the json leaves out: depth textures and comparison samplers,
-/// the format and access of storage textures, the bindings each entry point uses, and the buffer
-/// for loose globals. [`ShaderReflection::spirv_scanned`] tells which case a value is.
+/// A shader's bindings, push constants and entry points. The json covers most of it. The SPIR-V
+/// adds depth and comparison use, storage texture format and access, per-entry-point usage, and
+/// the loose globals' buffer. [`ShaderReflection::spirv_scanned`] says whether it was read.
 #[derive(Debug, Clone, Default)]
 pub struct ShaderReflection {
     pub bindings: Vec<Binding>,
     /// Size in bytes of the `[[vk::push_constant]]` block.
     pub immediate_size: u32,
-    /// Loose `uniform` globals. Their buffer is [`GLOBALS_NAME`] in `bindings` when the SPIR-V was
-    /// provided and the compiler kept any of them.
+    /// Has loose `uniform` globals, whose buffer is [`GLOBALS_NAME`] when the SPIR-V kept any.
     pub has_global_uniforms: bool,
     pub entry_points: HashMap<String, EntryPoint>,
-    /// Whether the SPIR-V was read, which is what the refinements above depend on.
+    /// Whether the SPIR-V was read.
     pub spirv_scanned: bool,
 }
 
@@ -107,8 +101,8 @@ impl ShaderReflection {
         Self::from_sources(&json, words.as_deref())
     }
 
-    /// Same as [`ShaderReflection::load`] for callers that already hold the contents. Get the words
-    /// of a binary with [`crate::spirv_words`].
+    /// Same as [`ShaderReflection::load`], for contents already in memory. Words come from
+    /// [`crate::spirv_words`].
     pub fn from_sources(json: &str, spirv: Option<&[u32]>) -> Result<Self, ReflectionError> {
         let mut reflection = json::parse(json)?.flatten()?;
         if let Some(words) = spirv {
@@ -118,8 +112,7 @@ impl ShaderReflection {
         Ok(reflection)
     }
 
-    /// A binding by its name in the shader, resources in structs and parameter blocks are named by
-    /// their dotted path.
+    /// A binding by its shader name, see [`Binding::name`].
     pub fn binding(&self, name: &str) -> Option<&Binding> {
         self.bindings.iter().find(|b| b.name == name)
     }
@@ -147,7 +140,7 @@ impl ShaderReflection {
         }
 
         if self.has_global_uniforms {
-            // The one uniform buffer that the json doesn't describe is the one for the loose globals.
+            // the json doesn't describe the loose globals' buffer, so it is found here
             let described: HashSet<Slot> = self.bindings.iter().map(Binding::slot).collect();
             let mut undescribed = info
                 .uniform_buffers

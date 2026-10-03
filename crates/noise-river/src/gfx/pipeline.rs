@@ -1,12 +1,7 @@
-//! Loads slang shaders that were precompiled to SPIR-V and builds render and compute pipelines out
-//! of them, taking the bind group layouts and the pipeline layout from the reflection json that
-//! slangc writes next to each binary, and from the binary itself.
-//!
-//! Every shader module is a `<name>.spv` and `<name>.json` pair in the shader directory:
-//! `slangc <name>.slang -target spirv -profile spirv_1_5 -emit-spirv-directly -fvk-use-entrypoint-name
-//! -o <name>.spv -reflection-json <name>.json`, which is what build.rs runs.
+//! Loads precompiled slang SPIR-V modules, and builds render and compute pipelines from them.
+//! Layouts come from each module's `<name>.spv` and `<name>.json` pair, written by build.rs.
 
-// this is the API of the manager, the app doesn't use all of it yet
+// the app doesn't use all of this API yet
 #![allow(dead_code)]
 
 use std::{
@@ -28,23 +23,22 @@ pub struct ShaderModule {
     pub reflection: ShaderReflection,
 }
 
-/// An entry point of a shader module, by the name of the module (its file name without extension).
+/// An entry point, by module name (file name without extension).
 #[derive(Debug, Clone, Copy)]
 pub struct ShaderRef<'a> {
     pub module: &'a str,
     pub entry_point: &'a str,
 }
 
-/// Binding types that can't be derived from the shader, by the name reflection gives to the binding,
-/// like `params.shadow` for a resource in a `ParameterBlock`. Applied over what was inferred.
+/// Binding types for what reflection can't infer, by reflected name (`params.shadow` in a
+/// `ParameterBlock`).
 pub type BindingOverrides<'a> = &'a [(&'a str, wgpu::BindingType)];
 
 pub struct RenderPipelineDesc<'a> {
     pub label: &'a str,
     pub vertex: ShaderRef<'a>,
     pub fragment: Option<ShaderRef<'a>>,
-    /// Defaults to a single interleaved per-vertex buffer with the vertex inputs from reflection,
-    /// in location order and tightly packed.
+    /// Defaults to one packed per-vertex buffer of the reflected inputs.
     pub vertex_buffers: Option<&'a [Option<wgpu::VertexBufferLayout<'a>>]>,
     pub color_targets: &'a [Option<wgpu::ColorTargetState>],
     pub primitive: wgpu::PrimitiveState,
@@ -74,15 +68,12 @@ impl PipelineLayoutInfo {
         self.bind_group_layouts.get(set as usize)?.as_ref()
     }
 
-    /// The `(set, binding)` of a resource, by its name in the shader.
-    /// Resources in structs and parameter blocks are named by their dotted path.
+    /// The `(set, binding)` of a resource by shader name. Struct and block members are dotted.
     pub fn binding(&self, name: &str) -> Option<Slot> {
         self.slots.get(name).copied()
     }
 
-    /// Makes the bind group of a descriptor set out of resources given by their names in the shader,
-    /// so that the binding numbers stay the shader's business. Every resource that the set has must be
-    /// given, wgpu rejects the bind group otherwise.
+    /// Bind group of a set, from resources named as in the shader. All of them are required.
     pub fn create_bind_group<'a>(
         &self,
         device: &wgpu::Device,
@@ -194,10 +185,8 @@ impl PipelineManager {
             })
             .collect();
 
-        // SAFETY: passthrough modules skip wgpu's validation, so the binary is handed to the driver
-        // as is. It comes from slangc and was checked to be well formed SPIR-V by the scan in
-        // `ShaderReflection::from_sources`, and
-        // every pipeline layout is built from the reflection of that same binary.
+        // SAFETY: passthrough skips wgpu's validation. The words were scanned as SPIR-V by
+        // `ShaderReflection::from_sources`, and every layout comes from that same binary.
         let module = unsafe {
             device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
                 label: Some(name),
@@ -364,7 +353,7 @@ fn entry_point<'m>(
     Ok(reflected)
 }
 
-/// One interleaved buffer: attributes are already sorted by location, so this only has to pack them.
+/// One interleaved buffer. Attributes are already sorted by location.
 fn packed_vertex_attributes(entry: &EntryPoint) -> (Vec<wgpu::VertexAttribute>, u64) {
     let mut offset = 0;
     let attributes = entry
@@ -434,8 +423,7 @@ fn build_layout(
         }
     }
 
-    // bindings that a stage really uses go first, so that a global that reflection lists but that
-    // was optimized out never gets to conflict with a binding that is in use
+    // used bindings first: an unused global must not conflict with a used one
     candidates.sort_by_key(|c| !c.used);
 
     let mut merged: BTreeMap<Slot, Merged> = BTreeMap::new();
@@ -508,7 +496,7 @@ fn build_layout(
         }
         entries_by_set[set as usize].push(wgpu::BindGroupLayoutEntry {
             binding,
-            // a binding that nothing uses is still part of the layout, visible to the whole pipeline
+            // unused bindings stay in the layout, visible to all stages
             visibility: if merged.visibility.is_empty() {
                 all_stages
             } else {
@@ -569,7 +557,7 @@ fn collect_candidates(
     Ok(())
 }
 
-/// Starts from what reflection says, then applies overrides.
+/// The override if there is one, else the reflected type.
 fn resolve_binding_type(
     binding: &slang_shady::Binding,
     overrides: BindingOverrides,
@@ -672,7 +660,7 @@ mod tests {
             entry_point: "fsMain",
             ..vertex
         };
-        // the vertex layout is taken from reflection, which has no inputs to make a buffer of
+        // no vertex inputs, so no vertex buffer
         let id = manager
             .create_render_pipeline(&device, &render_desc(vertex, Some(fragment)))
             .unwrap();
@@ -708,8 +696,7 @@ mod tests {
         assert_eq!(pipeline.layout.binding("params.shadow"), Some((0, 1)));
         assert_eq!(pipeline.layout.binding("target"), Some((1, 1)));
 
-        // Bind groups only validate if the inferred layouts are right: a depth texture next to a
-        // comparison sampler, and a write-only rgba16float storage texture.
+        // Bind groups only validate if the inferred layouts are right.
         let set0 = pipeline.layout.bind_group_layout(0).unwrap();
         let set1 = pipeline.layout.bind_group_layout(1).unwrap();
         let buffer = |usage, size| {

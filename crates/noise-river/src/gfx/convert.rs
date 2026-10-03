@@ -1,6 +1,5 @@
-//! Maps the shader descriptions of `slang-shady` to wgpu. These are plain functions instead of `From`
-//! impls because both types are foreign to this crate. The matches are exhaustive on purpose, a new
-//! variant in `slang-shady` has to be handled here before the app builds again.
+//! Maps `slang-shady` descriptions to wgpu. Plain functions, since both types are foreign. The
+//! matches are exhaustive, so a new variant fails the build here.
 
 use slang_shady::types::{
     BindingKind, SampleType, ShaderStage, StorageAccess, StorageFormat, TextureDimension,

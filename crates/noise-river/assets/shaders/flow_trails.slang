@@ -1,8 +1,7 @@
-// Pass 3, once per tick, after the lifetime pass: appends where each particle is to its trail.
+// Pass 3, once per tick, after lifetime: appends each particle's position to its trail.
 //
-// A trail is a ring buffer of `trailCapacity` packed positions per particle. The flags left by the
-// previous passes say what to record: a respawn starts a new trail at the spawn point, a particle
-// that moved adds a point, and one that is frozen while it fades out doesn't add any.
+// Trails are rings of `trailCapacity` packed points. FLAG_RESPAWNED restarts a trail at the spawn
+// point, FLAG_MOVED appends, and a frozen particle adds nothing.
 
 import particles;
 

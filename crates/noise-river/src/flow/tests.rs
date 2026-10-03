@@ -1,8 +1,7 @@
-//! Headless GPU tests of the flow field. Like the tests of the pipeline manager they skip when there is
-//! no Vulkan adapter to run on. They load the shaders that build.rs compiled, and compile a few small
-//! ones of their own.
+//! Headless GPU tests of the flow field. They skip without a Vulkan adapter. They load the shaders
+//! build.rs compiled.
 //!
-//! Set `FLOW_TEST_PNG_DIR` to a directory to have the tests that render write what they drew there.
+//! Set `FLOW_TEST_PNG_DIR` to write what the render tests draw there.
 
 use std::{
     fs,
@@ -14,7 +13,7 @@ use std::{
 use super::*;
 use crate::gfx::{PipelineManager, test_device};
 
-/// Not a multiple of 64 wide on purpose, so that the rows of a readback need padding.
+/// Not a multiple of 64 wide, so readback rows need padding.
 const SIZE: [u32; 2] = [500, 300];
 const BACKGROUND: [u8; 3] = [0x1b, 0x16, 0x10];
 
@@ -78,7 +77,7 @@ impl Harness {
         })
     }
 
-    /// Frames of exactly one tick each.
+    /// Runs `frames` frames, one tick each.
     fn step(&mut self, frames: u32) {
         for _ in 0..frames {
             self.field.sync(&self.device, &self.queue, &self.manager);
@@ -157,8 +156,7 @@ fn every_pass_builds_and_binds_what_its_shader_declares() {
         return;
     };
 
-    // The bind groups only build if the layouts that were reflected have every binding by the name
-    // that the field asks for, and wgpu only accepts them if the resources are of the right kind.
+    // Bind groups only build if every binding is there by name, and of the right kind.
     assert_eq!(harness.field.sim.count, 500);
     assert_eq!(harness.field.sim.capacity, 900);
     assert_eq!(harness.field.sim.particles.size(), 500 * 64);
@@ -197,7 +195,7 @@ fn particles_keep_their_invariants_through_their_whole_lifecycle() {
     let mut saw_respawn = false;
     let mut previous: Vec<Particle> = Vec::new();
 
-    // 700 ticks is past the longest life of 500, so every particle has died at least once
+    // 700 ticks > the max life of 500: every particle dies at least once
     for _ in 0..14 {
         harness.step(50);
         let particles = harness.particles();
@@ -215,18 +213,17 @@ fn particles_keep_their_invariants_through_their_whole_lifecycle() {
 
             if p.is_dying() {
                 saw_dying = true;
-                // frozen and fading, the alpha is a ramp down from where the death began
+                // frozen, fading from the alpha at death
                 assert!(p.dying_ticks < fade_ticks, "{context}");
                 let expected = p.dying_alpha_start * (1.0 - p.dying_ticks / fade_ticks);
                 assert!((p.alpha - expected).abs() < 1e-4, "{context}");
             } else {
-                // the death is decided in the same tick as the move, so nothing that is alive is
-                // out of the area or past its life
+                // deaths are decided in the same tick as the move
                 assert!(p.pos[0] >= 0.0 && p.pos[0] <= width, "{context}");
                 assert!(p.pos[1] >= 0.0 && p.pos[1] <= height, "{context}");
                 assert!(p.age < p.life, "{context}");
                 assert!(p.traveled <= 0.7 * height + 1e-3, "{context}");
-                // full opacity until the fade starts at 3 s, then a ramp down to the end of the life
+                // opaque until the 3 s fade start, then linear to the end of life
                 let expected = if p.age <= 180.0 {
                     1.0
                 } else {
@@ -260,7 +257,7 @@ fn a_reset_gives_every_particle_a_trail_at_its_spawn_point() {
     harness.field.params.paused = true;
     harness.step(1);
 
-    // paused, so nothing has moved: the only thing in a trail is where the particle spawned
+    // paused: the trail is just the spawn point
     let particles = harness.particles();
     let history: Vec<u32> = read_buffer(
         &harness.device,
@@ -276,7 +273,7 @@ fn a_reset_gives_every_particle_a_trail_at_its_spawn_point() {
             "particle {i}"
         );
 
-        // unpack what the trails pass packed: unorm16 in the area grown by 16 px on every side
+        // unpack the trail's unorm16, over the area grown by 16 px a side
         let packed = history[i * harness.field.sim.capacity as usize];
         let unpacked = [
             (packed & 0xffff) as f32 / 65535.0 * (sim_size[0] + 32.0) - 16.0,
@@ -448,7 +445,7 @@ fn a_field_that_has_not_moved_is_the_plain_background() {
     harness.field.params.paused = true;
     harness.step(1);
 
-    // a trail with one point is not a strand yet, so nothing is drawn and the clear color shows
+    // one point is not a strand yet: only the background shows
     let image = harness.image();
     assert_eq!(image.len(), (SIZE[0] * SIZE[1] * 4) as usize);
     for texel in texels(&image) {
@@ -480,9 +477,7 @@ fn strands_are_drawn_in_the_colors_of_the_palettes() {
         "every pixel was drawn on, the background is gone"
     );
 
-    // the palettes are dark to bright, so nothing gets to be brighter than their brightest stop
-    // (#ffe27a and friends), and blending toward it can only make the pixel less dark than the
-    // background, never dimmer than the darkest stop and the background
+    // the strands are visible: some channel gets past 0x30
     let brightest = texels(&image)
         .iter()
         .map(|t| t[0].max(t[1]).max(t[2]))
@@ -528,8 +523,7 @@ fn a_strand_is_as_opaque_as_its_particle_is() {
     let image = harness.image();
     debug_png("single-strand", SIZE, &image);
 
-    // the middle of the strand has full coverage, so what it shows is the background blended with
-    // white by exactly the alpha of the particle
+    // the middle has full coverage: the background blended with white by the particle's alpha
     for channel in 0..3 {
         let brightest = texels(&image)
             .iter()
@@ -555,8 +549,7 @@ fn a_srgb_surface_shows_the_same_colors_as_the_image() {
     harness.field.params.paused = true;
     harness.step(1);
 
-    // The image holds gamma encoded values. The surface encodes what it is given, so the composite
-    // decodes them first, and reading the surface back gives the same bytes as the image.
+    // the composite decodes for the sRGB surface, so reading it back gives the image's bytes
     let surface =
         export::read_rgba8(&harness.device, &harness.queue, &harness.surface, SIZE).unwrap();
     for texel in texels(&surface).iter() {
@@ -722,10 +715,10 @@ fn the_export_button_saves_a_png_in_the_background() {
     harness.step(60);
 
     harness.field.request_export();
-    harness.step(1); // the frame does the readback, and hands the file to another thread
+    harness.step(1); // the frame starts the readback and the save thread
     assert!(harness.field.export.is_saving() || harness.field.export.status.is_some());
 
-    // a second click while it is busy is ignored and doesn't queue up another file
+    // a second click while saving is ignored
     harness.field.request_export();
 
     let started = std::time::Instant::now();

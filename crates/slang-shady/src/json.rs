@@ -1,5 +1,4 @@
-//! Reads the json that `slangc -reflection-json` writes next to a SPIR-V binary and flattens it
-//! into plain terms: bindings, push constant size and entry point interfaces.
+//! Flattens slangc's reflection json into bindings, push constant size and entry point interfaces.
 
 use std::num::NonZeroU32;
 
@@ -35,7 +34,7 @@ struct TypeLayout {
     kind: String,
     base_shape: Option<String>,
     access: Option<String>,
-    /// Texture arrays, as opposed to `kind == "array"` which is an array of any resource.
+    /// Texture array. `kind == "array"` is an array of any resource.
     array: bool,
     multisample: bool,
     combined: bool,
@@ -151,8 +150,7 @@ fn push_constant_size(ty: &TypeLayout) -> u32 {
         .unwrap_or(0)
 }
 
-/// `set` is where the var's own bindings live, `offset` is added to the relative binding indices
-/// of anything nested in it.
+/// `set` holds the var's bindings. `offset` is added to nested binding indices.
 fn visit_var(
     out: &mut ShaderReflection,
     path: &str,
@@ -164,7 +162,7 @@ fn visit_var(
     let kind = binding.map_or("", |b| b.kind.as_str());
 
     match kind {
-        // ordinary data, it's part of a buffer that gets its own binding
+        // ordinary data, in a buffer with its own binding
         "uniform" => Ok(()),
         "descriptorTableSlot" => {
             let slot = offset + binding.map_or(0, |b| b.index);
@@ -184,8 +182,7 @@ fn visit_var(
     }
 }
 
-/// A `ParameterBlock` gets a descriptor set of its own, and an implicit uniform buffer at the
-/// start of it when it has ordinary data in it.
+/// A `ParameterBlock` is its own set, with an implicit uniform buffer first if it has plain data.
 fn visit_block(
     out: &mut ShaderReflection,
     param: &VarLayout,
@@ -338,7 +335,7 @@ fn scalar_type(ty: Option<&TypeLayout>) -> Option<&str> {
     }
 }
 
-/// Struct fields have their locations relative to the struct's own, `base` accumulates them.
+/// Struct field locations are relative to the struct, so `base` accumulates them.
 fn collect_vertex_inputs(
     var: &VarLayout,
     base: u32,

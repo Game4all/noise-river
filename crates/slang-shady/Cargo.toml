@@ -11,5 +11,5 @@ spirv = { workspace = true }
 thiserror = { workspace = true }
 
 [features]
-# compiles the shaders in testdata/ on demand, for the tests of this crate and of the crates using it
+# compiles testdata/ on demand, for this crate's tests and those of its users
 testing = []

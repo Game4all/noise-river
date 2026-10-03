@@ -1,13 +1,12 @@
-//! The permutation table of the Perlin noise, which the shaders read from a buffer. It is built the
-//! way the `Perlin` class in flow_field_example.html does, so that a seed gives the same field as
-//! it does there. The noise itself is in `assets/shaders/lib/perlin.slang`.
+//! Perlin permutation table, built as the `Perlin` class of flow_field_example.html builds it, so a
+//! seed gives the same field. The noise is in `assets/shaders/lib/perlin.slang`.
 
-/// The 256 entry permutation repeated twice, so that the shader can index past the first copy.
+/// The 256 entry permutation, twice, so the shader can index past the first copy.
 pub fn permutation(seed: u32) -> [u32; 512] {
     let mut p: [u32; 256] = std::array::from_fn(|i| i as u32);
 
-    // xorshift32, with the integer semantics of the JS it comes from: `s` is an int32 and stays one
-    // through the xors, `>>>` shifts it as unsigned, and only the last step goes to a double
+    // xorshift32 with JS integer semantics: `s` stays int32 through the xors, `>>>` is unsigned,
+    // and only the output becomes a double.
     let mut s = seed as i32;
     let mut rand = move || {
         s ^= s << 13;

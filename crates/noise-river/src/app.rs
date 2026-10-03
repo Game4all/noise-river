@@ -12,14 +12,14 @@ use crate::{
     gfx::{EguiContext, GfxContext},
 };
 
-/// Context for the application, holding all the state and resources.
+/// Application state.
 #[derive(Default)]
 pub struct ApplicationContext {
     window: Option<Arc<Window>>,
     gfx: Option<GfxContext>,
     egui: Option<EguiContext>,
     flow: Option<FlowFieldSimulation>,
-    /// When the previous frame was drawn, which the simulation is stepped by.
+    /// Previous frame's time, for stepping the simulation.
     last_frame: Option<Instant>,
 }
 
@@ -42,8 +42,7 @@ impl ApplicationContext {
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
 
-            // the trail image follows the size of what it is drawn to, which is what the frame says
-            // and not what the last resize event did
+            // sized from the frame, not from the last resize event
             flow.resize(
                 &gfx.device,
                 &gfx.pipelines,
@@ -99,7 +98,7 @@ impl ApplicationHandler for ApplicationContext {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        // handle egui events first so that they consume input events before the application does
+        // egui first, so it can consume input before the app
         if let (Some(window), Some(egui)) = (&self.window, &mut self.egui) {
             let _ = egui.state.on_window_event(window, &event);
         }

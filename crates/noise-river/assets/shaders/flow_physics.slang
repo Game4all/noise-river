@@ -1,7 +1,7 @@
-// Pass 1, once per tick: steers every living particle along the noise field and moves it.
+// Pass 1, once per tick: steers living particles by the noise and moves them.
 //
-// The noise only picks WHERE inside a bounded cone around the fixed bias direction the heading
-// eases toward, it never accumulates turn, which is what keeps particles from spiraling.
+// Noise picks a target inside a cone around the fixed bias, and the heading eases toward it.
+// Turn never accumulates, so particles don't spiral.
 
 import particles;
 import perlin;
@@ -18,12 +18,11 @@ void csPhysics(uint3 id : SV_DispatchThreadID)
         return;
 
     Particle p = particles[i];
-    // a particle that died early stays frozen in place while it fades out
+    // early-dead particles are frozen while they fade
     if (p.dyingTicks >= 0.0)
         return;
 
-    // two octaves: broad sweeps from the base, and a higher frequency layer so that the target keeps
-    // wobbling even across a patch where the base field is flat
+    // two octaves: the detail layer keeps the target wobbling where the base is flat
     float2 samplePos = p.pos * params.noiseScale;
     float nBase = perlin2D(perm, samplePos);
     float nDetail = perlin2D(perm, samplePos * params.detailScale + 1000.0);

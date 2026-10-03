@@ -1,18 +1,12 @@
-// Pass 4, once per frame: draws every particle's whole trail as one anti-aliased ribbon with round
-// caps at both ends, the way a canvas stroke with `lineCap = 'round'` looks.
+// Pass 4, once per frame: draws each particle's trail as one anti-aliased ribbon with round caps.
 //
-// One instance per particle, drawn as a triangle strip with no vertex buffer, the vertices are pulled
-// from the trail history. The strip has a mitered joint at every point, so consecutive quads share
-// their edge and nothing gets blended twice inside one strand. That is what a canvas polyline stroke
-// gives too, and why one alpha can cover the whole strand and fade all of it together as the particle
-// ages.
+// One instance per particle, a triangle strip with no vertex buffer: vertices are pulled from the
+// trail history. Mitered joints share their edges, so nothing is blended twice inside a strand, and
+// one alpha fades the whole strand.
 //
-// There are `trailWindow` real points, plus one extra virtual point past each end, extended along the
-// strand's own tangent there by the line's half width — `trailWindow + 2` points, `2 * (trailWindow +
-// 2)` vertices. The fragment shader turns that straight extension into a round cap: see the comment on
-// `across` and `along` below. Vertices past the end of a short trail collapse onto its last real
-// point, which makes triangles with no area. A particle that is invisible or has no segment yet is
-// moved out of the clip volume.
+// `trailWindow` points plus a virtual point past each end: `2 * (trailWindow + 2)` vertices.
+// Vertices past a short trail's end collapse onto its last point, giving zero-area triangles.
+// Invisible or segmentless particles are moved out of the clip volume.
 
 import particles;
 
@@ -23,12 +17,9 @@ struct VertexOut
 {
     float4 pos : SV_Position;
     nointerpolation float4 color : COLOR;  // rgb, and the alpha of the whole strand
-    // `across` and `along` place the fragment in the frame of the nearest real point: `across` is the
-    // signed distance to the center line, `along` is how far past that point the vertex was pushed to
-    // make room for a round cap, 0 anywhere that isn't a cap. `length(along, across)` is then the
-    // fragment's exact distance to the capsule made of the strand's center line and that point, which
-    // is a straight line's distance where along is 0 and a circle's where it isn't. One SDF formula
-    // covers both, and interior geometry (every along is 0) renders exactly as it did without caps.
+    // Round caps are an SDF: `across` is the signed distance to the center line, `along` how far a
+    // cap vertex was pushed out (0 elsewhere). `length(along, across)` is then the distance to a
+    // capsule: a line's where along is 0, a circle's at a cap.
     float across : ACROSS;
     float along : ALONG;
     nointerpolation float core : CORE;     // half width of the solid part in pixels
@@ -63,8 +54,7 @@ VertexOut vsStrand(uint vertexId : SV_VulkanVertexID, uint instance : SV_VulkanI
     if (count < 2u || p.alpha <= 0.0)
         return output;
 
-    // Slot 0 is the tail's cap, slots 1..=trailWindow are the real points (collapsing onto the last
-    // real one once a short trail runs out), and the last slot is the head's cap.
+    // slot 0: tail cap. 1..=trailWindow: points, collapsing onto the last one. Last: head cap.
     uint slot = vertexId >> 1u;
     bool tailCap = slot == 0u;
     bool headCap = slot == params.trailWindow + 1u;
@@ -86,18 +76,15 @@ VertexOut vsStrand(uint vertexId : SV_VulkanVertexID, uint instance : SV_VulkanI
     float2 nIn = float2(-tIn.y, tIn.x);
     float2 nOut = float2(-tOut.y, tOut.x);
     float2 miter = unitOr(nIn + nOut, nIn);
-    // the ribbon gets longer along the miter on a bend, but no more than 4 times as much
+    // miter length is capped at 4x on sharp bends
     float stretch = 1.0 / max(dot(miter, nIn), 0.25);
 
-    // Width in physical pixels. The solid part is at least one pixel wide and thinner lines are
-    // drawn at that width with a lower alpha, which is what coverage looks like for a real line.
+    // Physical pixels. Lines under 1 px are drawn 1 px wide at lower alpha, as coverage would.
     float width = p.size * params.pixelScale;
     float core = max(width, 1.0) * 0.5;
-    float edge = core + 0.5;  // the ribbon reaches half a pixel past the solid part for the AA ramp
+    float edge = core + 0.5;  // half a pixel of AA ramp past the solid part
 
-    // Push the cap slots out along the strand's own end tangent by the same distance the sides reach
-    // across it, so the extension is a square exactly big enough to hold a circle of that radius; see
-    // the fragment shader for what turns it into that circle.
+    // Caps extend along the end tangent by `edge`, the sides' reach, so the quad holds the circle.
     float2 capDir = tailCap ? -tOut : (headCap ? tOut : float2(0.0, 0.0));
     float along = (tailCap || headCap) ? edge : 0.0;
 
@@ -114,8 +101,6 @@ VertexOut vsStrand(uint vertexId : SV_VulkanVertexID, uint instance : SV_VulkanI
 [shader("fragment")]
 float4 fsStrand(VertexOut input) : SV_Target
 {
-    // See the comment on `along` in VertexOut: this is a straight line's distance where it interpolated
-    // to 0, and a circle's around the end point in the two cap quads where it didn't.
     float distance = length(float2(input.along, input.across));
     float coverage = saturate(input.core + 0.5 - distance);
     return float4(input.color.rgb, input.color.a * coverage);

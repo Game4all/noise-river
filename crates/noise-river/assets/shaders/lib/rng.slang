@@ -1,5 +1,4 @@
-// A small, fast random number generator for the simulation: a PCG hash used both to seed a stream and
-// to advance it.
+// Small PCG-hash RNG for the simulation. The same hash seeds and advances the stream.
 
 uint pcgHash(uint v)
 {
@@ -21,8 +20,7 @@ public struct Rng
     }
 };
 
-/// Seeds a stream from up to three numbers, so that changing any one of them (a particle's index, the
-/// tick it respawned on, the simulation's own seed) gives an unrelated stream.
+/// Stream seeded from three values (index, tick, seed). Changing any one gives an unrelated stream.
 public Rng makeRng(uint a, uint b, uint c)
 {
     Rng rng;

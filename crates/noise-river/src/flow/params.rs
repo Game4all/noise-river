@@ -1,8 +1,6 @@
-//! Everything that can be tuned about the flow field, and the GPU side mirrors of it.
-//!
-//! [`FlowParams`] is the tunable state that the UI edits. [`GpuParams`] and [`Particle`] have the
-//! exact memory layout of `SimParams` and `Particle` in `assets/shaders/lib/particles.slang`, keep the
-//! two in sync. The layout tests at the bottom check the sizes and offsets that slangc reflects.
+//! Tunable flow field parameters, and their GPU mirrors. [`GpuParams`] and [`Particle`] match
+//! `SimParams` and `Particle` in `assets/shaders/lib/particles.slang` byte for byte. The layout
+//! tests at the bottom pin the sizes and offsets.
 
 use std::f32::consts::PI;
 
@@ -11,12 +9,10 @@ use bytemuck::{Pod, Zeroable};
 pub const MAX_PALETTES: usize = 16;
 pub const MAX_PALETTE_STOPS: usize = 64;
 
-/// The simulation runs at a fixed rate. The html counted in frames at 60 fps, so all of its "per frame"
-/// numbers (speed, trail points) are "per tick" here, and "seconds" are 60 ticks.
+/// Fixed simulation rate. The html's per-frame values (speed, trail points at 60 fps) are per tick.
 pub const TICKS_PER_SECOND: f32 = 60.0;
 
-/// A gradient of colors, an ordered list of stops. A particle picks a random palette when it spawns,
-/// then a random point along its gradient.
+/// A gradient: ordered stops. Particles pick a palette and a point on it at spawn.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Palette {
     pub name: String,
@@ -36,25 +32,23 @@ impl Range {
     }
 }
 
-/// The knobs of the simulation, with the values that `CONFIG` has in the html as the defaults.
+/// Simulation knobs. Defaults are the html's `CONFIG`.
 #[derive(Debug, Clone)]
 pub struct FlowParams {
     // ---- particles and their trails ----
     /// Changing it respawns everyone.
     pub particle_count: u32,
-    /// Seconds of its own path that every particle keeps drawn behind it.
+    /// Trail length, in seconds. Ignored with `infinite_trails`.
     pub accumulation_seconds: f32,
-    /// Every particle keeps its whole life as its trail, up to `max_trail_points`.
+    /// The trail is the whole life, capped by `max_trail_points`.
     pub infinite_trails: bool,
-    /// Points of history that a particle can hold, however long the accumulation is. It sets the
-    /// memory that the trails take, so changing it respawns everyone.
+    /// Ring capacity per particle. Sizes the history buffer, so changing it respawns everyone.
     pub max_trail_points: u32,
-    /// Seconds after its spawn that a particle stays fully opaque, then it fades to nothing as it
-    /// reaches the end of its life.
+    /// Age in seconds until the strand fades, linear to 0 at the end of life.
     pub trail_fade_start_seconds: f32,
-    /// Seconds that a particle that dies early fades out for.
+    /// Fade-out time of an early death, in seconds.
     pub death_fade_seconds: f32,
-    /// Opacity of a strand, before the fade.
+    /// Strand opacity before fading.
     pub stroke_alpha: f32,
 
     // ---- the field ----
@@ -63,22 +57,22 @@ pub struct FlowParams {
     /// -1 is up, 1 is down.
     pub bias_y: f32,
     pub noise_scale: f32,
-    /// Frequency of the second octave, as a multiple of `noise_scale`.
+    /// Second octave's frequency, as a multiple of `noise_scale`.
     pub detail_scale: f32,
-    /// How much the second octave counts next to the first.
+    /// Second octave's weight, against the first.
     pub detail_weight: f32,
     /// How quickly the heading eases toward the noise target, 0..1 per tick.
     pub turn_smoothing: f32,
-    /// Picks the noise field, and the sequence of random numbers of the particles.
+    /// Seeds the noise field and the particles' random numbers.
     pub noise_seed: u32,
 
-    // ---- what every particle rolls at its spawn, so these only change new particles ----
+    // ---- rolled at spawn, only affect new particles ----
     /// Pixels per tick.
     pub speed: Range,
     /// Stroke width in logical pixels.
     pub point_size: Range,
     pub life_seconds: Range,
-    /// As a fraction of the smaller side, a particle dies after traveling that far.
+    /// Fraction of the smaller side. Particles die after traveling this far.
     pub max_travel_distance: f32,
 
     // ---- looks ----
@@ -142,11 +136,10 @@ impl Default for FlowParams {
 }
 
 impl FlowParams {
-    /// The direction that particles are pulled toward. It is a fixed anchor, never the particle's own
-    /// heading, which is what made them circle in an earlier version of the html.
+    /// Fixed pull direction. Tying it to the particle's own heading made them circle.
     pub fn bias_angle(&self) -> f32 {
         if self.bias_x == 0.0 && self.bias_y == 0.0 {
-            0.0 // an arbitrary anchor, see `max_deviation`
+            0.0 // arbitrary: with no bias the cone is the full circle
         } else {
             self.bias_y.atan2(self.bias_x)
         }
@@ -157,14 +150,13 @@ impl FlowParams {
         self.bias_x.hypot(self.bias_y).min(1.0)
     }
 
-    /// How far from the bias angle the noise can steer a particle: the full circle without any bias,
-    /// a tight cone of about 31 degrees around it with the most.
+    /// Max steer either side of the bias angle, in radians: π with no bias, 0.55 at full.
     pub fn max_deviation(&self) -> f32 {
         const TIGHT_CONE: f32 = 0.55;
         PI + (TIGHT_CONE - PI) * self.bias_strength()
     }
 
-    /// Points of history to allocate per particle.
+    /// Points allocated per particle, at least 2.
     pub fn trail_capacity(&self) -> u32 {
         self.max_trail_points.max(2)
     }
@@ -181,8 +173,8 @@ impl FlowParams {
         by_time.clamp(2.min(capacity), capacity)
     }
 
-    /// Builds what the shaders read. `capacity` is the ring size that the trail history was allocated
-    /// with, and `particle_count` how many particles are in it.
+    /// Builds what the shaders read. The `particle_count` and `capacity` are the
+    /// allocated buffers' values, not `self`'s.
     pub fn to_gpu(
         &self,
         sim_size: [f32; 2],
@@ -219,8 +211,8 @@ impl FlowParams {
         gpu.trail_window = self.trail_window(capacity);
         gpu.seed = self.noise_seed;
 
-        // Palettes go one after the other in one array of stops. A palette needs 2 stops, and the UI
-        // doesn't let the limits be crossed, so what doesn't fit is only dropped here for safety.
+        // Palettes are packed back to back in one stop array. The UI keeps within the limits,
+        // so this only guards.
         let mut stops = 0;
         let mut palettes = 0;
         for palette in self.palettes.iter().take(MAX_PALETTES) {
@@ -251,7 +243,7 @@ fn srgb(channel: u8) -> f32 {
     f32::from(channel) / 255.0
 }
 
-/// `SimParams`, the uniform buffer of every pass. std140: rows of 16 bytes, and arrays of vec4.
+/// `SimParams`, the uniform of every pass. std140.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct GpuParams {
@@ -324,7 +316,7 @@ mod tests {
 
     use super::*;
 
-    // These are what slangc reports for the shader structs, see the reflection json of any flow pass.
+    // Offsets as slangc reflects them for the flow passes.
     #[test]
     fn gpu_params_has_the_std140_layout_of_sim_params() {
         assert_eq!(size_of::<GpuParams>(), 1376);
@@ -363,7 +355,7 @@ mod tests {
         assert_eq!(params.bias_angle(), 0.0);
         assert!((params.max_deviation() - PI).abs() < 1e-6);
 
-        // the strength saturates at 1 however far the diagonal reaches
+        // strength clamps at 1
         params.bias_x = 1.0;
         params.bias_y = 1.0;
         assert_eq!(params.bias_strength(), 1.0);

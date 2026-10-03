@@ -2,7 +2,7 @@ use std::{io, path::PathBuf, string::FromUtf8Error};
 
 use thiserror::Error;
 
-/// Everything that can go wrong while building a [`crate::ShaderReflection`].
+/// Failures building a [`crate::ShaderReflection`].
 #[derive(Debug, Error)]
 pub enum ReflectionError {
     #[error("failed to read {}: {source}", path.display())]
@@ -15,11 +15,11 @@ pub enum ReflectionError {
     Unsupported(#[from] UnsupportedType),
 }
 
-/// Reflection describes something that can't be expressed as a binding or a vertex attribute.
+/// Reflection describes something with no binding or vertex attribute form.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("`{name}` isn't supported: {detail}")]
 pub struct UnsupportedType {
-    /// The name of the parameter, or its dotted path when it is inside a struct or a parameter block.
+    /// Parameter name, dotted inside structs and parameter blocks.
     pub name: String,
     pub detail: String,
 }

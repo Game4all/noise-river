@@ -12,7 +12,7 @@ use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use wgpu::InstanceFlags;
 use winit::window::Window;
 
-/// Get a PathBuf to the dir containing pre-compiled SPIR-V shaders along with their reflection metadata.
+/// Directory of the precompiled shaders, next to the executable.
 fn compiled_shader_dir() -> std::path::PathBuf {
     std::env::current_exe()
         .expect("Failed to locate the executable")
@@ -30,14 +30,14 @@ pub struct GfxContext {
     pub surface: wgpu::Surface<'static>,
     /// Precompiled slang shaders and the pipelines built from them.
     pub pipelines: PipelineManager,
-    /// Tracks whether a surface reconfiguration is pending, because we can't reconfigure the surface while a frame is acquired.
+    /// Reconfiguration due. Applied in `present`, since the surface can't change mid-frame.
     pending_surface_reconfiguration: bool,
 }
 
 impl GfxContext {
     pub fn new(window: Arc<Window>) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            // forcing vulkan as a backend exclusively for now, since SPIR-V passthrough is only a thing on vulkan
+            // Vulkan only: SPIR-V passthrough needs it
             backends: wgpu::Backends::VULKAN,
             backend_options: Default::default(),
             flags: InstanceFlags::from_build_config()
@@ -57,8 +57,7 @@ impl GfxContext {
         }))
         .expect("Failed to find a GPU adapter");
 
-        // shaders are precompiled slang SPIR-V that goes straight to the driver, and their push
-        // constants are wgpu immediates
+        // passthrough SPIR-V, and push constants are immediates
         let required_features = wgpu::Features::PASSTHROUGH_SHADERS
             | wgpu::Features::IMMEDIATES
             | wgpu::Features::TEXTURE_BINDING_ARRAY
@@ -70,7 +69,7 @@ impl GfxContext {
             required_features: required_features,
             required_limits: wgpu::Limits {
                 max_immediate_size: adapter_limits.max_immediate_size.min(128),
-                // the default 128 MiB is too small for the trail history of a lot of particles
+                // the 128 MiB default is too small for a big trail history
                 max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
                 max_buffer_size: adapter_limits.max_buffer_size,
                 ..wgpu::Limits::default()
@@ -105,8 +104,7 @@ impl GfxContext {
         }
     }
 
-    /// Reconfigures the surface for a new size.
-    /// Zero w/h is a no-op since those correspond to getting to a minimized state.
+    /// Reconfigures the surface. A zero size (minimized) is a no-op.
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
@@ -123,7 +121,7 @@ impl GfxContext {
         match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => Some(frame),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                // queue a reconfiguration for the next frame, because we cannot reconfigure the surface while a render target texture is acquired from it
+                // can't reconfigure while the frame is acquired: `present` does it
                 self.pending_surface_reconfiguration = true;
                 Some(frame)
             }
@@ -137,8 +135,7 @@ impl GfxContext {
         }
     }
 
-    /// Presents a texture acquired by [`GfxContext::begin_frame`].
-    /// If a surface reconfiguration was pending, it is done after the frame is presented.
+    /// Presents a frame from [`GfxContext::begin_frame`], then applies any pending reconfiguration.
     pub fn present(&mut self, frame: wgpu::SurfaceTexture) {
         self.queue.present(frame);
 

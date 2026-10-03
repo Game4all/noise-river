@@ -1,9 +1,6 @@
-//! Describes the interface of a slang shader: its bindings, push constants and entry points.
-//!
-//! Everything is behind [`ShaderReflection`]. It is built from the json that `slangc
-//! -reflection-json` writes next to a SPIR-V binary, and optionally from the binary too, which
-//! fills in what the json leaves out (see [`ShaderReflection::load`]).
-//!
+//! Interface of a slang shader: bindings, push constants and entry points, as [`ShaderReflection`].
+//! Built from slangc's reflection json, and optionally from the SPIR-V too, which fills in what the
+//! json leaves out.
 
 mod error;
 mod json;
@@ -16,6 +13,5 @@ pub mod types;
 
 pub use error::{ReflectionError, SpirvError, UnsupportedType};
 pub use shader::{Binding, EntryPoint, GLOBALS_NAME, ShaderReflection, VertexInput};
-/// Reads a SPIR-V binary as the little-endian words it is made of.
 pub use spirv::words as spirv_words;
 pub use types::Slot;

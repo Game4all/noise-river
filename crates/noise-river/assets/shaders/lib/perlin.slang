@@ -1,5 +1,5 @@
-// Classic 2D Perlin noise, a straight port of the `Perlin` class in flow_field_example.html.
-// The permutation table is a 512 entry buffer that the host builds from a seed, see flow/perlin.rs.
+// 2D Perlin noise, ported from the `Perlin` class in flow_field_example.html. The 512 entry
+// permutation comes from flow/perlin.rs.
 
 float perlinFade(float t)
 {

@@ -3,13 +3,12 @@ use std::{io, path::PathBuf};
 use slang_shady::ReflectionError;
 use thiserror::Error;
 
-/// Everything that can go wrong while loading shaders and building pipelines out of them.
+/// Shader loading and pipeline build failures.
 #[derive(Debug, Error)]
 pub enum PipelineError {
     #[error("failed to read {}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
-    /// The reflection json or the SPIR-V of the module is invalid, or describes something that
-    /// can't be expressed as a wgpu binding or vertex attribute.
+    /// Invalid reflection or SPIR-V, or something wgpu can't express as a binding or attribute.
     #[error("can't reflect shader module `{module}`: {source}")]
     Reflection {
         module: String,
@@ -23,13 +22,13 @@ pub enum PipelineError {
         entry: String,
         expected: &'static str,
     },
-    /// The information for a binding isn't in the shader binary, so the caller has to provide it.
+    /// The binary doesn't say enough about this binding. The caller must override it.
     #[error("can't infer the binding type of `{name}` ({reason}), provide a binding override")]
     MissingOverride { name: String, reason: String },
-    /// A binding override that doesn't match any reflected binding, most likely a typo.
+    /// An override for no reflected binding, likely a typo.
     #[error("binding override `{name}` doesn't match any shader binding")]
     UnknownOverride { name: String },
-    /// A bind group was asked to bind a name that the pipeline has no resource of in that set.
+    /// A bind group named a resource the pipeline lacks in that set.
     #[error("the pipeline has no binding `{name}` in set {set}")]
     UnknownBinding { name: String, set: u32 },
     #[error("set {set} binding {binding} is `{first}` in one stage and `{second}` in another")]

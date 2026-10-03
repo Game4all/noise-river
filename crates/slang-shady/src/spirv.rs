@@ -1,6 +1,5 @@
-//! Extracts the binding information that the slang reflection json leaves out from a SPIR-V binary:
-//! storage image formats and access, depth textures, comparison samplers and which bindings each
-//! entry point actually uses. [`crate::ShaderReflection`] merges it into what the json says.
+//! Reads what the reflection json leaves out of a SPIR-V binary: storage image formats and access,
+//! depth and comparison use, and the bindings each entry point uses.
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,11 +24,9 @@ pub(crate) struct SpirvBinding {
 #[derive(Debug, Default)]
 pub(crate) struct SpirvInfo {
     pub bindings: HashMap<Slot, SpirvBinding>,
-    /// Slots referenced by each entry point. Only reliable from SPIR-V 1.4 on, which is when
-    /// entry point interfaces started listing every global variable that is used.
+    /// Slots each entry point uses. Needs SPIR-V 1.4+, where interfaces list every global used.
     pub entry_usage: HashMap<String, HashSet<Slot>>,
-    /// Slots of uniform buffers, which includes the implicit buffer slang makes for loose global
-    /// uniforms. That one is the only buffer that the reflection json doesn't describe.
+    /// Uniform buffer slots, including the implicit one for loose globals that the json omits.
     pub uniform_buffers: HashSet<Slot>,
 }
 
@@ -65,7 +62,7 @@ pub(crate) fn scan(words: &[u32]) -> Result<SpirvInfo, SpirvError> {
     let mut binding_of: HashMap<u32, u32> = HashMap::new();
     let mut types: HashMap<u32, Ty> = HashMap::new();
     let mut variables: Vec<(u32, u32, StorageClass)> = Vec::new();
-    // Ids of pointers and loaded values, mapped back to the global variable they come from.
+    // pointer and loaded value ids, mapped to their global variable
     let mut origin: HashMap<u32, u32> = HashMap::new();
     let mut sampled_images: HashMap<u32, (u32, u32)> = HashMap::new();
     let mut usage: HashMap<u32, VarUse> = HashMap::new();
@@ -194,8 +191,8 @@ pub(crate) fn scan(words: &[u32]) -> Result<SpirvInfo, SpirvError> {
                     binding.storage_access = Some(match var_use {
                         Some(u) if u.writes && !u.reads => StorageAccess::WriteOnly,
                         Some(u) if u.reads && !u.writes => StorageAccess::ReadOnly,
-                        // also when the image is only handed to a function we don't follow,
-                        // read-write is the conservative choice
+                        // also when it's passed to a function we don't follow: read-write is the
+                        // safe default
                         _ => StorageAccess::ReadWrite,
                     });
                 }

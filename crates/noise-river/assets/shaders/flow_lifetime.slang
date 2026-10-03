@@ -1,5 +1,5 @@
-// Pass 2, once per tick, after the physics: ages the particles, fades their strands, and decides
-// when they die and respawn. Also has the entry point that spawns everyone after a reset.
+// Pass 2, once per tick, after physics: ages particles, fades them, and decides death and respawn.
+// csSpawn gives everyone a first life after a reset.
 
 import particles;
 
@@ -7,7 +7,7 @@ import particles;
 
 struct Push
 {
-    uint tick;  // counts up forever, so that a respawn never rolls the same numbers twice
+    uint tick;  // never repeats: a respawn never rolls the same numbers twice
 };
 [[vk::push_constant]] ConstantBuffer<Push> push;
 
@@ -23,8 +23,7 @@ void csLifetime(uint3 id : SV_DispatchThreadID)
 
     if (p.dyingTicks >= 0.0)
     {
-        // An early death (edge of the area, too far traveled) doesn't pop the strand out of
-        // existence. The particle stays frozen and its opacity ramps down from wherever it was.
+        // Early death (off the edge, too far traveled): frozen, fading from the alpha it died at.
         p.dyingTicks += 1.0;
         float fadeTicks = max(1.0, params.deathFadeTicks);
         p.alpha = p.dyingAlphaStart * max(0.0, 1.0 - p.dyingTicks / fadeTicks);
@@ -48,7 +47,7 @@ void csLifetime(uint3 id : SV_DispatchThreadID)
     particles[i] = p;
 }
 
-/// Gives every particle a first life. The trails pass that follows records their spawn points.
+/// First life for every particle. The trails pass that follows records the spawn points.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void csSpawn(uint3 id : SV_DispatchThreadID)
