@@ -326,8 +326,12 @@ impl FlowFieldSimulation {
             "A particle that dies early, at the edge or after it traveled too far, freezes and fades \
              out over this long instead of popping out of existence.",
         );
-        ui.add(Slider::new(&mut params.stroke_alpha, 0.01..=1.0).text("stroke opacity"))
-            .on_hover_text("How opaque a strand is before it fades.");
+        ui.add(
+            Slider::new(&mut params.stroke_alpha, 0.005..=1.0)
+                .text("stroke opacity")
+                .step_by(0.005),
+        )
+        .on_hover_text("How opaque a strand is before it fades.");
     }
 
     fn field_controls(&mut self, ui: &mut Ui) {
