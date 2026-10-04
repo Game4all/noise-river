@@ -8,7 +8,12 @@
 
 ## Whats this ?
 
-This is an interactive perlin flow field particle physics simulation, that is basically an invisible force field randomly generated with perlin noise that steers movement of hundred of particles which are accumulating.
+This is an interactive perlin flow field particle physics simulation, that is basically an invisible force field randomly generated with perlin noise that steers movement of hundred of particles which are accumulating on a canvas. Them accumulating over time can give nice results such as those ones
+
+| Screenshot | Screenshot |
+|------------|------------|
+| <img src="./assets/screenshot_1.jpeg" width="320" alt="Screenshot of what you can get out of it" /> | I'll add another image later|
+
 
 ## Running the thing
 
