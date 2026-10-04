@@ -4,7 +4,8 @@
 
 use std::ops::RangeInclusive;
 
-use egui::{Align, Layout, Slider, Ui};
+use egui::containers::menu::{MenuButton, MenuConfig};
+use egui::{Align, Layout, PopupCloseBehavior, Slider, Ui};
 use egui_material_icons::{MaterialIcon, icons::*};
 
 use super::{FlowFieldSimulation, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range, ScaleFilter};
@@ -12,7 +13,6 @@ use super::{FlowFieldSimulation, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range
 /// A group of settings, with a window of its own.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum SettingsSection {
-    Image,
     Trails,
     Field,
     Spawn,
@@ -20,8 +20,7 @@ pub(super) enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub(super) const ALL: [SettingsSection; 5] = [
-        SettingsSection::Image,
+    pub(super) const ALL: [SettingsSection; 4] = [
         SettingsSection::Trails,
         SettingsSection::Field,
         SettingsSection::Spawn,
@@ -30,7 +29,6 @@ impl SettingsSection {
 
     fn icon(self) -> MaterialIcon {
         match self {
-            SettingsSection::Image => ICON_IMAGE,
             SettingsSection::Trails => ICON_GRAIN,
             SettingsSection::Field => ICON_AIR,
             SettingsSection::Spawn => ICON_ADD_CIRCLE,
@@ -40,7 +38,6 @@ impl SettingsSection {
 
     fn title(self) -> &'static str {
         match self {
-            SettingsSection::Image => "image",
             SettingsSection::Trails => "particles and trails",
             SettingsSection::Field => "flow field",
             SettingsSection::Spawn => "new particles",
@@ -59,8 +56,8 @@ impl FlowFieldSimulation {
             self.params.paused = !self.params.paused;
         }
 
-        let frame = egui::Frame::side_top_panel(ui.style())
-            .inner_margin(egui::Margin::symmetric(8, 12));
+        let frame =
+            egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 12));
         egui::Panel::top("menu bar").frame(frame).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 self.sim_controls(ui);
@@ -107,12 +104,21 @@ impl FlowFieldSimulation {
 
         ui.separator();
         let [width, height] = self.target.size;
-        ui.label(format!("{width}×{height} px")).on_hover_text(format!(
-            "At {:.2}x, with {} particles taking {:.1} MiB.",
+        let hover = format!(
+            "At {:.2}x, with {} particles taking {:.1} MiB. Click to change the image.",
             self.target.pixel_scale,
             self.sim.count,
             self.memory_bytes() as f32 / (1024.0 * 1024.0),
-        ));
+        );
+        // the controls are edited in place, so only a click outside closes the popover
+        let config = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
+        let (response, _) = MenuButton::new(format!("{width}×{height} px"))
+            .config(config)
+            .ui(ui, |ui| {
+                ui.set_min_width(300.0);
+                self.image_controls(ui);
+            });
+        response.on_hover_text(hover);
         ui.label(format!("{:.0} fps", self.stats.fps));
 
         if self.sim.count < self.params.particle_count {
@@ -163,7 +169,6 @@ impl FlowFieldSimulation {
 
     fn section_controls(&mut self, ui: &mut Ui, section: SettingsSection) {
         match section {
-            SettingsSection::Image => self.image_controls(ui),
             SettingsSection::Trails => self.trail_controls(ui),
             SettingsSection::Field => self.field_controls(ui),
             SettingsSection::Spawn => self.spawn_controls(ui),
@@ -179,11 +184,14 @@ impl FlowFieldSimulation {
         let draft = &mut self.image_draft;
         let image = &mut self.image;
 
-        ui.checkbox(&mut image.follow_window, "follow window")
-            .on_hover_text(
-                "Keeps the image at the window's size and scale. The particles start over when \
+        ui.checkbox(
+            &mut image.follow_window,
+            "Automatically resize to window size",
+        )
+        .on_hover_text(
+            "Keeps the image at the window's size and scale. The particles start over when \
                  the window resizes.",
-            );
+        );
         ui.add_enabled_ui(!image.follow_window, |ui| {
             ui.horizontal(|ui| {
                 ui.add(egui::DragValue::new(&mut draft[0]).range(MIN_SIDE..=max_side))
