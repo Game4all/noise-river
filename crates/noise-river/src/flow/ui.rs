@@ -7,7 +7,10 @@ use std::ops::RangeInclusive;
 
 use egui::containers::menu::{MenuButton, MenuConfig};
 use egui::{Align, Layout, PopupCloseBehavior, Slider, Ui};
-use egui_material_icons::{MaterialIcon, icons::*};
+use egui_material_icons::{
+    MaterialIcon,
+    icons::{self, *},
+};
 
 use super::{
     FlowFieldSimulation, FlowParams, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range, ScaleFilter,
@@ -189,6 +192,13 @@ impl FlowFieldSimulationUIState {
         let draft = &mut self.image_draft;
         let image = &mut sim.image;
 
+        ui.label(
+            egui::RichText::new(icon_label(icons::ICON_IMAGE, "image settings"))
+                .size(14.0)
+                .strong(),
+        );
+        ui.separator();
+        ui.add_space(5.0);
         ui.checkbox(
             &mut image.follow_window,
             "Automatically resize to window size",
@@ -240,7 +250,10 @@ impl FlowFieldSimulationUIState {
              is sharper and a lower one is cheaper.",
         );
         let [width, height] = image.target_size(max_side);
-        ui.label(format!("→ {width}×{height} px"));
+        ui.label(icon_label(
+            icons::ICON_WINDOW,
+            &format!("{width}x{height} px"),
+        ));
         let effective = image.effective_scale(max_side);
         if effective < image.render_scale {
             ui.colored_label(
