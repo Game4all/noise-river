@@ -23,8 +23,6 @@ mod ui;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashSet;
-
 use wgpu::util::DeviceExt;
 
 use crate::gfx::{
@@ -33,6 +31,7 @@ use crate::gfx::{
 };
 
 pub use params::*;
+pub use ui::FlowFieldSimulationUIState;
 
 /// Strands blend here in gamma space, like a canvas. Half floats avoid the banding that 8 bits
 /// would show under many faint strokes.
@@ -345,8 +344,6 @@ pub struct FlowFieldSimulation {
     pub params: FlowParams,
     pub image: ImageSettings,
     pub stats: Stats,
-    /// The size the image settings' fields show before "apply".
-    pub image_draft: [u32; 2],
 
     /// The window's size and scale factor, from [`FlowFieldSimulation::set_window`]. "match window"
     /// uses them.
@@ -371,8 +368,6 @@ pub struct FlowFieldSimulation {
     tick_debt: f32,
     reset_pending: bool,
     export: export::Exporter,
-    /// Which settings sections have their window open.
-    open_sections: HashSet<ui::SettingsSection>,
 }
 
 impl FlowFieldSimulation {
@@ -426,7 +421,6 @@ impl FlowFieldSimulation {
             params,
             image,
             stats: Stats::default(),
-            image_draft: image.size,
             window_size: image.size,
             window_density: scale_factor,
             max_side,
@@ -440,7 +434,6 @@ impl FlowFieldSimulation {
             tick_debt: 0.0,
             reset_pending: true,
             export: export::Exporter::default(),
-            open_sections: HashSet::new(),
         })
     }
 
@@ -471,7 +464,6 @@ impl FlowFieldSimulation {
         if self.image.follow_window {
             self.image.size = size;
             self.image.density = scale_factor;
-            self.image_draft = size;
         }
     }
 

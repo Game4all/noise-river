@@ -8,7 +8,7 @@ use winit::{
 };
 
 use crate::{
-    flow::FlowFieldSimulation,
+    flow::{FlowFieldSimulation, FlowFieldSimulationUIState},
     gfx::{EguiContext, GfxContext},
 };
 
@@ -19,15 +19,20 @@ pub struct ApplicationContext {
     gfx: Option<GfxContext>,
     egui: Option<EguiContext>,
     flow: Option<FlowFieldSimulation>,
+    flow_ui: FlowFieldSimulationUIState,
     /// Previous frame's time, for stepping the simulation.
     last_frame: Option<Instant>,
 }
 
 impl ApplicationContext {
     fn redraw(&mut self) {
-        let (Some(window), Some(gfx), Some(egui), Some(flow)) =
-            (&self.window, &mut self.gfx, &mut self.egui, &mut self.flow)
-        else {
+        let (Some(window), Some(gfx), Some(egui), Some(flow), flow_ui) = (
+            &self.window,
+            &mut self.gfx,
+            &mut self.egui,
+            &mut self.flow,
+            &mut self.flow_ui,
+        ) else {
             return;
         };
 
@@ -51,7 +56,7 @@ impl ApplicationContext {
             flow.frame(&gfx.device, &gfx.queue, &gfx.pipelines, dt, &view);
 
             // egui draws over the flow field instead of clearing it
-            egui.render(gfx, window, &frame, None, |ui| flow.ui(ui));
+            egui.render(gfx, window, &frame, None, |ui| flow_ui.update_ui(ui, flow));
             gfx.present(frame);
         }
         window.request_redraw();

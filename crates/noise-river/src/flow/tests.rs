@@ -667,7 +667,6 @@ fn the_image_follows_the_window_by_default() {
     harness.step(1);
     assert_eq!(harness.field.image.size, [400, 200]);
     assert_eq!(harness.field.image.density, 2.0);
-    assert_eq!(harness.field.image_draft, [400, 200]);
     assert_eq!(harness.field.target.size, [400, 200]);
     assert_eq!(harness.field.target.sim_size, [200.0, 100.0]);
 }

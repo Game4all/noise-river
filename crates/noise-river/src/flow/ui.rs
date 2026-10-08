@@ -2,13 +2,16 @@
 //! A menu bar on top holds the simulation buttons and readouts, and a settings menu that opens one
 //! window per section. The html's help text is on hover.
 
+use std::collections::HashSet;
 use std::ops::RangeInclusive;
 
 use egui::containers::menu::{MenuButton, MenuConfig};
 use egui::{Align, Layout, PopupCloseBehavior, Slider, Ui};
 use egui_material_icons::{MaterialIcon, icons::*};
 
-use super::{FlowFieldSimulation, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range, ScaleFilter};
+use super::{
+    FlowFieldSimulation, FlowParams, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range, ScaleFilter,
+};
 
 /// A group of settings, with a window of its own.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -19,6 +22,11 @@ pub(super) enum SettingsSection {
     Look,
 }
 
+/// Formats a string with a material icon codepoint a label string
+fn icon_label(icon: MaterialIcon, label: &str) -> String {
+    format!("{}  {}", icon.codepoint, label)
+}
+
 impl SettingsSection {
     pub(super) const ALL: [SettingsSection; 4] = [
         SettingsSection::Trails,
@@ -27,40 +35,44 @@ impl SettingsSection {
         SettingsSection::Look,
     ];
 
-    fn icon(self) -> MaterialIcon {
+    fn as_label_str(self) -> String {
         match self {
-            SettingsSection::Trails => ICON_GRAIN,
-            SettingsSection::Field => ICON_AIR,
-            SettingsSection::Spawn => ICON_ADD_CIRCLE,
-            SettingsSection::Look => ICON_PALETTE,
-        }
-    }
-
-    fn title(self) -> &'static str {
-        match self {
-            SettingsSection::Trails => "particles and trails",
-            SettingsSection::Field => "flow field",
-            SettingsSection::Spawn => "new particles",
-            SettingsSection::Look => "look",
+            SettingsSection::Trails => icon_label(ICON_GRAIN, "particles and trails"),
+            SettingsSection::Field => icon_label(ICON_AIR, "flow field"),
+            SettingsSection::Spawn => icon_label(ICON_ADD_CIRCLE, "new particles"),
+            SettingsSection::Look => icon_label(ICON_PALETTE, "look"),
         }
     }
 }
 
-impl FlowFieldSimulation {
+/// What the controls remember between frames. The simulation itself is passed in to edit.
+#[derive(Default)]
+pub struct FlowFieldSimulationUIState {
+    /// Which settings sections have their window open.
+    open_sections: HashSet<SettingsSection>,
+    /// The size the image settings' fields show before "apply".
+    image_draft: [u32; 2],
+    /// The `image.size` that the draft was last synced to.
+    seen_image_size: [u32; 2],
+}
+
+impl FlowFieldSimulationUIState {
     /// The menu bar and the open settings windows. Edits apply from the next frame.
-    pub fn ui(&mut self, ui: &mut Ui) {
+    pub fn update_ui(&mut self, ui: &mut Ui, sim: &mut FlowFieldSimulation) {
+        self.sync_draft_img_size(sim.image.size);
+
         // not while typing in a text field
         if !ui.ctx().egui_wants_keyboard_input()
             && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space))
         {
-            self.params.paused = !self.params.paused;
+            sim.params.paused = !sim.params.paused;
         }
 
         let frame =
             egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 12));
         egui::Panel::top("menu bar").frame(frame).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                self.sim_controls(ui);
+                self.sim_controls(ui, sim);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     self.settings_menu(ui);
                 });
@@ -69,28 +81,35 @@ impl FlowFieldSimulation {
 
         let ctx = ui.ctx().clone();
         for (index, section) in SettingsSection::ALL.into_iter().enumerate() {
-            self.section_window(&ctx, section, index);
+            self.section_window(&ctx, sim, section, index);
         }
     }
 
-    /// Play and pause, reset and export, then the resolution and the fps.
-    fn sim_controls(&mut self, ui: &mut Ui) {
-        let (icon, hover) = if self.params.paused {
+    /// Syncs draft image size to current image size in sim state
+    fn sync_draft_img_size(&mut self, image_size: [u32; 2]) {
+        if image_size != self.seen_image_size {
+            self.seen_image_size = image_size;
+            self.image_draft = image_size;
+        }
+    }
+
+    fn sim_controls(&mut self, ui: &mut Ui, sim: &mut FlowFieldSimulation) {
+        let (icon, hover) = if sim.params.paused {
             (ICON_PLAY_ARROW, "Resumes the simulation.")
         } else {
             (ICON_PAUSE, "Pauses the simulation.")
         };
         if ui.button(icon.codepoint).on_hover_text(hover).clicked() {
-            self.params.paused = !self.params.paused;
+            sim.params.paused = !sim.params.paused;
         }
         if ui
             .button(ICON_REPLAY.codepoint)
             .on_hover_text("Starts every particle over at a random spot.")
             .clicked()
         {
-            self.request_reset();
+            sim.request_reset();
         }
-        let saving = self.export.is_saving();
+        let saving = sim.export.is_saving();
         if ui
             .add_enabled(!saving, egui::Button::new(ICON_DOWNLOAD.codepoint))
             .on_hover_text(
@@ -99,16 +118,16 @@ impl FlowFieldSimulation {
             )
             .clicked()
         {
-            self.request_export();
+            sim.request_export();
         }
 
         ui.separator();
-        let [width, height] = self.target.size;
+        let [width, height] = sim.target.size;
         let hover = format!(
             "At {:.2}x, with {} particles taking {:.1} MiB. Click to change the image.",
-            self.target.pixel_scale,
-            self.sim.count,
-            self.memory_bytes() as f32 / (1024.0 * 1024.0),
+            sim.target.pixel_scale,
+            sim.sim.count,
+            sim.memory_bytes() as f32 / (1024.0 * 1024.0),
         );
         // the controls are edited in place, so only a click outside closes the popover
         let config = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
@@ -116,73 +135,59 @@ impl FlowFieldSimulation {
             .config(config)
             .ui(ui, |ui| {
                 ui.set_min_width(300.0);
-                self.image_controls(ui);
+                self.image_controls(ui, sim);
             });
         response.on_hover_text(hover);
-        ui.label(format!("{:.0} fps", self.stats.fps));
+        ui.label(format!("{:.0} fps", sim.stats.fps));
 
-        if self.sim.count < self.params.particle_count {
+        if sim.sim.count < sim.params.particle_count {
             ui.colored_label(ui.visuals().warn_fg_color, ICON_WARNING.codepoint)
-                .on_hover_text(self.particle_limit_warning());
+                .on_hover_text(particle_limit_warning(sim));
         }
-        if let Some(status) = &self.export.status {
+        if let Some(status) = &sim.export.status {
             ui.weak(status);
         }
     }
 
-    fn particle_limit_warning(&self) -> String {
-        format!(
-            "limited to {} particles, the trails of more wouldn't fit in a buffer. \
-             Lower the max trail length to have more.",
-            self.sim.count
-        )
-    }
-
-    /// A button that pops up the sections, each of which opens its window.
     fn settings_menu(&mut self, ui: &mut Ui) {
-        ui.menu_button(format!("{}  settings", ICON_SETTINGS.codepoint), |ui| {
+        ui.menu_button(icon_label(ICON_SETTINGS, "settings"), |ui| {
             for section in SettingsSection::ALL {
-                let label = format!("{}  {}", section.icon().codepoint, section.title());
                 let open = self.open_sections.contains(&section);
-                if ui.selectable_label(open, label).clicked() {
+                if ui.selectable_label(open, section.as_label_str()).clicked() {
                     self.open_sections.insert(section);
                 }
             }
         });
     }
 
-    /// `index` only staggers the default positions, so windows opened together don't overlap.
-    fn section_window(&mut self, ctx: &egui::Context, section: SettingsSection, index: usize) {
+    fn section_window(
+        &mut self,
+        ctx: &egui::Context,
+        sim: &mut FlowFieldSimulation,
+        section: SettingsSection,
+        index: usize,
+    ) {
         let mut open = self.open_sections.contains(&section);
         let offset = 24.0 * index as f32;
-        egui::Window::new(format!("{}  {}", section.icon().codepoint, section.title()))
-            .id(egui::Id::new(("section", section.title())))
+        egui::Window::new(section.as_label_str())
+            .id(egui::Id::new(section.as_label_str()))
             .open(&mut open)
             .default_pos([16.0 + offset, 48.0 + offset])
             .default_width(380.0)
             .vscroll(true)
-            .show(ctx, |ui| self.section_controls(ui, section));
+            .show(ctx, |ui| section_controls(ui, sim, section));
         if !open {
             self.open_sections.remove(&section);
         }
     }
 
-    fn section_controls(&mut self, ui: &mut Ui, section: SettingsSection) {
-        match section {
-            SettingsSection::Trails => self.trail_controls(ui),
-            SettingsSection::Field => self.field_controls(ui),
-            SettingsSection::Spawn => self.spawn_controls(ui),
-            SettingsSection::Look => self.look_controls(ui),
-        }
-    }
-
-    fn image_controls(&mut self, ui: &mut Ui) {
+    fn image_controls(&mut self, ui: &mut Ui, sim: &mut FlowFieldSimulation) {
         const MIN_SIDE: u32 = 16;
-        let max_side = self.max_side;
-        let window_size = self.window_size;
-        let window_density = self.window_density;
+        let max_side = sim.max_side;
+        let window_size = sim.window_size;
+        let window_density = sim.window_density;
         let draft = &mut self.image_draft;
-        let image = &mut self.image;
+        let image = &mut sim.image;
 
         ui.checkbox(
             &mut image.follow_window,
@@ -218,9 +223,9 @@ impl FlowFieldSimulation {
                     .on_hover_text("Takes the window's size and scale, and applies them.")
                     .clicked()
                 {
+                    // the draft follows on the next frame
                     image.size = window_size;
                     image.density = window_density;
-                    *draft = window_size;
                 }
             });
         });
@@ -260,54 +265,72 @@ impl FlowFieldSimulation {
                 );
         });
     }
+}
 
-    fn trail_controls(&mut self, ui: &mut Ui) {
-        if self.sim.count < self.params.particle_count {
-            ui.colored_label(ui.visuals().warn_fg_color, self.particle_limit_warning());
-        }
-        let params = &mut self.params;
+fn particle_limit_warning(sim: &FlowFieldSimulation) -> String {
+    format!(
+        "limited to {} particles, the trails of more wouldn't fit in a buffer. \
+         Lower the max trail length to have more.",
+        sim.sim.count
+    )
+}
 
-        ui.add(
-            Slider::new(&mut params.particle_count, 1..=1_000_000)
-                .logarithmic(true)
-                .text("particle count"),
-        )
-        .on_hover_text(
-            "How many particles exist at once. Changing this respawns all of them. Every particle \
+fn section_controls(ui: &mut Ui, sim: &mut FlowFieldSimulation, section: SettingsSection) {
+    match section {
+        SettingsSection::Trails => trail_controls(ui, sim),
+        SettingsSection::Field => field_controls(ui, &mut sim.params),
+        SettingsSection::Spawn => spawn_controls(ui, &mut sim.params),
+        SettingsSection::Look => look_controls(ui, &mut sim.params),
+    }
+}
+
+fn trail_controls(ui: &mut Ui, sim: &mut FlowFieldSimulation) {
+    if sim.sim.count < sim.params.particle_count {
+        ui.colored_label(ui.visuals().warn_fg_color, particle_limit_warning(sim));
+    }
+    let params = &mut sim.params;
+
+    ui.add(
+        Slider::new(&mut params.particle_count, 1..=1_000_000)
+            .logarithmic(true)
+            .text("particle count"),
+    )
+    .on_hover_text(
+        "How many particles exist at once. Changing this respawns all of them. Every particle \
              redraws its whole trail every frame, so the drawing work is about the particle count \
              times the trail length.",
-        );
+    );
 
-        ui.add_enabled(
-            !params.infinite_trails,
-            Slider::new(&mut params.accumulation_seconds, 0.05..=12.0)
-                .suffix(" s")
-                .text("accumulation"),
-        )
-        .on_hover_text(
-            "How many seconds of its own recent path each particle keeps and redraws as one \
+    ui.add_enabled(
+        !params.infinite_trails,
+        Slider::new(&mut params.accumulation_seconds, 0.05..=12.0)
+            .suffix(" s")
+            .text("accumulation"),
+    )
+    .on_hover_text(
+        "How many seconds of its own recent path each particle keeps and redraws as one \
              strand. The strand fades as a whole as the particle ages, see \"trail fade start\". \
              Ignored while \"infinite\" is checked.",
-        );
-        ui.checkbox(&mut params.infinite_trails, "infinite (whole lifetime)")
-            .on_hover_text(
-                "Every particle keeps its entire lifetime as its trail, up to the max trail length, \
+    );
+    ui.checkbox(&mut params.infinite_trails, "infinite (whole lifetime)")
+        .on_hover_text(
+            "Every particle keeps its entire lifetime as its trail, up to the max trail length, \
                  instead of a fixed number of seconds. The strand still fades away and clears when \
                  the particle respawns.",
-            );
-
-        ui.add(
-            Slider::new(&mut params.max_trail_points, 10..=3000)
-                .suffix(" pts")
-                .text("max trail length"),
-        )
-        .on_hover_text(
-            "The most points that a trail can hold, on top of the accumulation, whichever is smaller \
-             wins. It is the limit while \"infinite\" is checked. It also sets how much memory the \
-             trails take, so changing it respawns all particles.",
         );
 
-        ui.add(
+    ui.add(
+        Slider::new(&mut params.max_trail_points, 10..=3000)
+            .suffix(" pts")
+            .text("max trail length"),
+    )
+    .on_hover_text(
+        "The most points that a trail can hold, on top of the accumulation, whichever is smaller \
+             wins. It is the limit while \"infinite\" is checked. It also sets how much memory the \
+             trails take, so changing it respawns all particles.",
+    );
+
+    ui.add(
             Slider::new(&mut params.trail_fade_start_seconds, 0.0..=15.0)
                 .suffix(" s")
                 .text("trail fade start"),
@@ -317,123 +340,115 @@ impl FlowFieldSimulation {
              then dims together down to nothing right as the particle respawns. At 0 they fade from \
              birth, above the longest life they don't fade at all.",
         );
-        ui.add(
-            Slider::new(&mut params.death_fade_seconds, 0.0..=3.0)
-                .suffix(" s")
-                .text("death fade"),
-        )
-        .on_hover_text(
-            "A particle that dies early, at the edge or after it traveled too far, freezes and fades \
+    ui.add(
+        Slider::new(&mut params.death_fade_seconds, 0.0..=3.0)
+            .suffix(" s")
+            .text("death fade"),
+    )
+    .on_hover_text(
+        "A particle that dies early, at the edge or after it traveled too far, freezes and fades \
              out over this long instead of popping out of existence.",
-        );
-        ui.add(
-            Slider::new(&mut params.stroke_alpha, 0.005..=1.0)
-                .text("stroke opacity")
-                .step_by(0.005),
-        )
-        .on_hover_text("How opaque a strand is before it fades.");
-    }
+    );
+    ui.add(
+        Slider::new(&mut params.stroke_alpha, 0.005..=1.0)
+            .text("stroke opacity")
+            .step_by(0.005),
+    )
+    .on_hover_text("How opaque a strand is before it fades.");
+}
 
-    fn field_controls(&mut self, ui: &mut Ui) {
-        let params = &mut self.params;
-
-        ui.add(Slider::new(&mut params.bias_x, -1.0..=1.0).text("horizontal bias"))
-            .on_hover_text(
-                "Pulls the flow left (negative) or right (positive). Together with the vertical bias \
+fn field_controls(ui: &mut Ui, params: &mut FlowParams) {
+    ui.add(Slider::new(&mut params.bias_x, -1.0..=1.0).text("horizontal bias"))
+        .on_hover_text(
+            "Pulls the flow left (negative) or right (positive). Together with the vertical bias \
                  it makes one direction, and both at 0 means no preferred direction at all.",
-            );
-        ui.add(Slider::new(&mut params.bias_y, -1.0..=1.0).text("vertical bias"))
-            .on_hover_text(
-                "Pulls the flow up (negative) or down (positive). How far the two biases are from \
+        );
+    ui.add(Slider::new(&mut params.bias_y, -1.0..=1.0).text("vertical bias"))
+        .on_hover_text(
+            "Pulls the flow up (negative) or down (positive). How far the two biases are from \
                  (0, 0) also sets how tightly particles keep to that direction: near it they go \
                  anywhere, at the edges they commit to a narrow cone.",
-            );
+        );
 
-        ui.add(
-            Slider::new(&mut params.noise_scale, 0.0005..=0.05)
-                .logarithmic(true)
-                .text("noise scale"),
-        )
-        .on_hover_text("Frequency of the noise. Higher is more turbulent, with tighter wiggles.");
-        ui.add(Slider::new(&mut params.detail_scale, 1.0..=8.0).text("detail scale"))
-            .on_hover_text(
-                "The second, finer octave of the noise, as a multiple of the noise scale.",
-            );
-        ui.add(Slider::new(&mut params.detail_weight, 0.0..=1.0).text("detail weight"))
-            .on_hover_text("How much that second octave counts next to the broad one.");
-        ui.add(
-            Slider::new(&mut params.turn_smoothing, 0.01..=1.0)
-                .logarithmic(true)
-                .text("turn smoothing"),
-        )
+    ui.add(
+        Slider::new(&mut params.noise_scale, 0.0005..=0.05)
+            .logarithmic(true)
+            .text("noise scale"),
+    )
+    .on_hover_text("Frequency of the noise. Higher is more turbulent, with tighter wiggles.");
+    ui.add(Slider::new(&mut params.detail_scale, 1.0..=8.0).text("detail scale"))
+        .on_hover_text("The second, finer octave of the noise, as a multiple of the noise scale.");
+    ui.add(Slider::new(&mut params.detail_weight, 0.0..=1.0).text("detail weight"))
+        .on_hover_text("How much that second octave counts next to the broad one.");
+    ui.add(
+        Slider::new(&mut params.turn_smoothing, 0.01..=1.0)
+            .logarithmic(true)
+            .text("turn smoothing"),
+    )
+    .on_hover_text(
+        "How quickly a particle's heading eases toward what the noise says. Lower is lazier.",
+    );
+
+    ui.horizontal(|ui| {
+        ui.add(egui::DragValue::new(&mut params.noise_seed));
+        ui.label("noise seed")
+            .on_hover_text("Picks the noise field. 42 is the one of the html.");
+    });
+
+    ui.add(Slider::new(&mut params.time_scale, 0.0..=4.0).text("speed of time"))
         .on_hover_text(
-            "How quickly a particle's heading eases toward what the noise says. Lower is lazier.",
+            "Runs the whole simulation faster or slower. It always ticks at a fixed rate.",
         );
+}
 
-        ui.horizontal(|ui| {
-            ui.add(egui::DragValue::new(&mut params.noise_seed));
-            ui.label("noise seed")
-                .on_hover_text("Picks the noise field. 42 is the one of the html.");
-        });
+fn spawn_controls(ui: &mut Ui, params: &mut FlowParams) {
+    ui.label("Every particle rolls these once when it spawns, so they only change new ones.");
 
-        ui.add(Slider::new(&mut params.time_scale, 0.0..=4.0).text("speed of time"))
-            .on_hover_text(
-                "Runs the whole simulation faster or slower. It always ticks at a fixed rate.",
-            );
-    }
-
-    fn spawn_controls(&mut self, ui: &mut Ui) {
-        let params = &mut self.params;
-        ui.label("Every particle rolls these once when it spawns, so they only change new ones.");
-
-        range_sliders(
-            ui,
-            "speed",
-            &mut params.speed,
-            0.1..=10.0,
-            "",
-            "Pixels moved per tick. A wider range shows more variety between fast and slow strands.",
-        );
-        range_sliders(
-            ui,
-            "point size",
-            &mut params.point_size,
-            0.1..=10.0,
-            "",
-            "The stroke width of the particle's strand, in pixels.",
-        );
-        range_sliders(
-            ui,
-            "life",
-            &mut params.life_seconds,
-            0.5..=30.0,
-            " s",
-            "Seconds until the particle respawns.",
-        );
-        ui.add(Slider::new(&mut params.max_travel_distance, 0.05..=3.0).text("max travel"))
-            .on_hover_text(
-                "As a fraction of the smaller side of the window, how far a particle can go before it \
+    range_sliders(
+        ui,
+        "speed",
+        &mut params.speed,
+        0.1..=10.0,
+        "",
+        "Pixels moved per tick. A wider range shows more variety between fast and slow strands.",
+    );
+    range_sliders(
+        ui,
+        "point size",
+        &mut params.point_size,
+        0.1..=10.0,
+        "",
+        "The stroke width of the particle's strand, in pixels.",
+    );
+    range_sliders(
+        ui,
+        "life",
+        &mut params.life_seconds,
+        0.5..=30.0,
+        " s",
+        "Seconds until the particle respawns.",
+    );
+    ui.add(Slider::new(&mut params.max_travel_distance, 0.05..=3.0).text("max travel"))
+        .on_hover_text(
+            "As a fraction of the smaller side of the window, how far a particle can go before it \
                  dies, whatever life it has left. It stops long straight runs from crossing the \
                  whole screen.",
-            );
-    }
+        );
+}
 
-    fn look_controls(&mut self, ui: &mut Ui) {
-        let params = &mut self.params;
+fn look_controls(ui: &mut Ui, params: &mut FlowParams) {
+    ui.horizontal(|ui| {
+        ui.color_edit_button_srgb(&mut params.background);
+        ui.label("background");
+    });
 
-        ui.horizontal(|ui| {
-            ui.color_edit_button_srgb(&mut params.background);
-            ui.label("background");
-        });
-
-        ui.add_space(4.0);
-        ui.label("palettes").on_hover_text(
+    ui.add_space(4.0);
+    ui.label("palettes").on_hover_text(
             "Each palette is a gradient. A particle picks a random palette when it spawns, and a \
              random point along its gradient, so only new particles get an edit. A palette needs at \
              least 2 stops.",
         );
-        palette_editor(ui, &mut params.palettes);
-    }
+    palette_editor(ui, &mut params.palettes);
 }
 
 /// Min and max sliders that keep `min <= max`, pushing the other end.
@@ -529,5 +544,27 @@ fn palette_editor(ui: &mut Ui, palettes: &mut Vec<Palette>) {
             name: "new".to_owned(),
             stops: vec![[0x88; 3], [0xdd; 3]],
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_draft_follows_the_image_size() {
+        let mut state = FlowFieldSimulationUIState::default();
+
+        state.sync_draft_img_size([800, 600]);
+        assert_eq!(state.image_draft, [800, 600]);
+
+        // an edit in progress survives while the image size doesn't change
+        state.image_draft = [1024, 768];
+        state.sync_draft_img_size([800, 600]);
+        assert_eq!(state.image_draft, [1024, 768]);
+
+        // a new size from anywhere replaces it
+        state.sync_draft_img_size([400, 200]);
+        assert_eq!(state.image_draft, [400, 200]);
     }
 }
