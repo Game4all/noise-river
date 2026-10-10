@@ -304,10 +304,13 @@ impl FlowFieldSimulationUIState {
 }
 
 fn particle_limit_warning(sim: &FlowFieldSimulation) -> String {
-    format!(
-        "limited to {} particles, the trails of more wouldn't fit in a buffer. \
+    icon_label(
+        icons::ICON_WARNING,
+        &format!(
+            "Limited to {} particles, the trails of more wouldn't fit in a buffer. \
          Lower the max trail length to have more.",
-        sim.sim.count
+            sim.sim.count
+        ),
     )
 }
 
