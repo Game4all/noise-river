@@ -193,12 +193,22 @@ impl FlowFieldSimulationUIState {
         let image = &mut sim.image;
 
         ui.label(
-            egui::RichText::new(icon_label(icons::ICON_IMAGE, "image settings"))
-                .size(14.0)
+            egui::RichText::new(icon_label(icons::ICON_IMAGE, "Image settings"))
+                .size(16.0)
                 .strong(),
         );
         ui.separator();
         ui.add_space(5.0);
+
+        // sim image size controls
+        ui.label(
+            egui::RichText::new(icon_label(icons::ICON_IMAGE, "Simulation image size"))
+                .strong()
+                .size(14.0)
+                .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(1.0);
+
         ui.checkbox(
             &mut image.follow_window,
             "Automatically resize to window size",
@@ -207,11 +217,12 @@ impl FlowFieldSimulationUIState {
             "Keeps the image at the window's size and scale. The particles start over when \
                  the window resizes.",
         );
+        ui.add_space(2.0);
         ui.add_enabled_ui(!image.follow_window, |ui| {
             ui.horizontal(|ui| {
                 ui.add(egui::DragValue::new(&mut draft[0]).range(MIN_SIDE..=max_side))
                     .on_hover_text("Width of the simulated image, in physical pixels.");
-                ui.label("×");
+                ui.label("x");
                 ui.add(egui::DragValue::new(&mut draft[1]).range(MIN_SIDE..=max_side))
                     .on_hover_text("Height of the simulated image, in physical pixels.");
                 ui.label("px");
@@ -219,7 +230,10 @@ impl FlowFieldSimulationUIState {
             ui.horizontal(|ui| {
                 let changed = *draft != image.size;
                 if ui
-                    .add_enabled(changed, egui::Button::new("apply"))
+                    .add_enabled(
+                        changed,
+                        egui::Button::new(icon_label(icons::ICON_CHECK, "apply")),
+                    )
                     .on_hover_text(
                         "Rebuilds the simulation at this size. The particles start over, since \
                          their area changed.",
@@ -229,7 +243,7 @@ impl FlowFieldSimulationUIState {
                     image.size = *draft;
                 }
                 if ui
-                    .button("match window")
+                    .button(icon_label(icons::ICON_ASPECT_RATIO, "match window's size"))
                     .on_hover_text("Takes the window's size and scale, and applies them.")
                     .clicked()
                 {
@@ -239,6 +253,15 @@ impl FlowFieldSimulationUIState {
                 }
             });
         });
+
+        ui.add_space(10.0);
+        ui.label(
+            egui::RichText::new(icon_label(icons::ICON_MAGNIFICATION_LARGE, "Render scale"))
+                .strong()
+                .size(14.0)
+                .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(1.0);
 
         ui.add(
             Slider::new(&mut image.render_scale, 0.25..=4.0)
@@ -251,8 +274,8 @@ impl FlowFieldSimulationUIState {
         );
         let [width, height] = image.target_size(max_side);
         ui.label(icon_label(
-            icons::ICON_WINDOW,
-            &format!("{width}x{height} px"),
+            icons::ICON_ARROW_RIGHT_ALT,
+            &format!("Scaled final image size: {width}x{height} px"),
         ));
         let effective = image.effective_scale(max_side);
         if effective < image.render_scale {
