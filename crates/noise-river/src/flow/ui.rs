@@ -14,6 +14,7 @@ use egui_material_icons::{
 
 use super::{
     FlowFieldSimulation, FlowParams, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range, ScaleFilter,
+    palette_presets,
 };
 
 /// A group of settings, with a window of its own.
@@ -476,17 +477,36 @@ fn spawn_controls(ui: &mut Ui, params: &mut FlowParams) {
 }
 
 fn look_controls(ui: &mut Ui, params: &mut FlowParams) {
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new(icon_label(
+            icons::ICON_BACKGROUND_GRID_SMALL,
+            "Background settings",
+        ))
+        .strong()
+        .size(14.0)
+        .color(ui.visuals().weak_text_color()),
+    );
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
         ui.color_edit_button_srgb(&mut params.background);
         ui.label("background");
     });
 
     ui.add_space(4.0);
-    ui.label("palettes").on_hover_text(
-            "Each palette is a gradient. A particle picks a random palette when it spawns, and a \
-             random point along its gradient, so only new particles get an edit. A palette needs at \
-             least 2 stops.",
-        );
+    ui.label(
+        egui::RichText::new(icon_label(icons::ICON_PALETTE, "Color palettes"))
+            .strong()
+            .size(14.0)
+            .color(ui.visuals().weak_text_color()),
+    );
+
+    // ui.add_space(4.0);
+    // ui.label("palettes").on_hover_text(
+    //         "Each palette is a gradient. A particle picks a random palette when it spawns, and a \
+    //          random point along its gradient, so only new particles get an edit. A palette needs at \
+    //          least 2 stops.",
+    //     );
     palette_editor(ui, &mut params.palettes);
 }
 
@@ -524,66 +544,158 @@ fn range_sliders(
     }
 }
 
+/// What a palette row asks the editor to do after it was drawn.
+#[derive(Default)]
+struct PaletteRowResult {
+    remove: bool,
+}
+
+/// Whether a palette of `new_stops` stops still fits next to `palettes`.
+fn can_insert(palettes: &[Palette], new_stops: usize) -> bool {
+    let stop_count: usize = palettes.iter().map(|palette| palette.stops.len()).sum();
+    palettes.len() < MAX_PALETTES && stop_count + new_stops <= MAX_PALETTE_STOPS
+}
+
 fn palette_editor(ui: &mut Ui, palettes: &mut Vec<Palette>) {
     let palette_count = palettes.len();
     let stop_count: usize = palettes.iter().map(|palette| palette.stops.len()).sum();
     let mut remove_palette = None;
 
     for (index, palette) in palettes.iter_mut().enumerate() {
-        ui.horizontal_wrapped(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut palette.name).desired_width(56.0));
-
-            let removable = palette.stops.len() > 2;
-            let mut remove_stop = None;
-            for (stop_index, stop) in palette.stops.iter_mut().enumerate() {
-                ui.color_edit_button_srgb(stop);
-                if removable
-                    && ui
-                        .small_button("−")
-                        .on_hover_text("Remove this stop")
-                        .clicked()
-                {
-                    remove_stop = Some(stop_index);
-                }
-            }
-            if let Some(stop_index) = remove_stop {
-                palette.stops.remove(stop_index);
-            }
-
-            if stop_count < MAX_PALETTE_STOPS
-                && ui
-                    .small_button("+")
-                    .on_hover_text("Adds a stop that copies the last color, to recolor")
-                    .clicked()
-                && let Some(&last) = palette.stops.last()
-            {
-                palette.stops.push(last);
-            }
-
+        let result = palette_row(
+            ui,
+            palette,
+            stop_count < MAX_PALETTE_STOPS,
             // spawning needs at least one palette to pick from
-            if palette_count > 1
-                && ui
-                    .small_button("✕ palette")
-                    .on_hover_text("Removes this whole palette")
-                    .clicked()
-            {
-                remove_palette = Some(index);
-            }
-        });
+            palette_count > 1,
+        );
+        if result.remove {
+            remove_palette = Some(index);
+        }
     }
     if let Some(index) = remove_palette {
         palettes.remove(index);
     }
 
-    if palette_count < MAX_PALETTES
-        && stop_count + 2 <= MAX_PALETTE_STOPS
-        && ui.small_button("+ add palette").clicked()
-    {
-        palettes.push(Palette {
-            name: "new".to_owned(),
-            stops: vec![[0x88; 3], [0xdd; 3]],
+    palette_add_buttons(ui, palettes);
+}
+
+fn palette_row(
+    ui: &mut Ui,
+    palette: &mut Palette,
+    can_add_stop: bool,
+    can_remove_palette: bool,
+) -> PaletteRowResult {
+    let mut result = PaletteRowResult::default();
+    ui.horizontal_wrapped(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut palette.name).desired_width(56.0));
+
+        let removable = palette.stops.len() > 2;
+        let mut remove_stop = None;
+        for (stop_index, stop) in palette.stops.iter_mut().enumerate() {
+            ui.color_edit_button_srgb(stop);
+            if removable
+                && ui
+                    .small_button(icons::ICON_DELETE.rich_text())
+                    .on_hover_text("Remove this stop")
+                    .clicked()
+            {
+                remove_stop = Some(stop_index);
+            }
+        }
+        if let Some(stop_index) = remove_stop {
+            palette.stops.remove(stop_index);
+        }
+
+        if can_add_stop
+            && ui
+                .small_button(icons::ICON_ADD.rich_text())
+                .on_hover_text("Adds a stop that copies the last color, to recolor")
+                .clicked()
+            && let Some(&last) = palette.stops.last()
+        {
+            palette.stops.push(last);
+        }
+
+        if can_remove_palette
+            && ui
+                .small_button(icon_label(icons::ICON_DELETE, "remove palette"))
+                .on_hover_text("Removes this whole palette")
+                .clicked()
+        {
+            result.remove = true;
+        }
+    });
+    result
+}
+
+fn palette_add_buttons(ui: &mut Ui, palettes: &mut Vec<Palette>) {
+    ui.horizontal(|ui| {
+        if can_insert(palettes, 2)
+            && ui
+                .small_button(icon_label(icons::ICON_ADD, "add palette"))
+                .clicked()
+        {
+            palettes.push(Palette {
+                name: "new".to_owned(),
+                stops: vec![[0x88; 3], [0xdd; 3]],
+            });
+        }
+
+        ui.menu_button(icon_label(icons::ICON_LIST, "add from preset"), |ui| {
+            for preset in palette_presets() {
+                let fits = can_insert(palettes, preset.stops.len());
+                let response = ui
+                    .add_enabled_ui(fits, |ui| {
+                        ui.horizontal(|ui| {
+                            gradient_display(ui, &preset.stops);
+                            ui.selectable_label(false, &preset.name)
+                        })
+                        .inner
+                    })
+                    .inner;
+                let response = if fits {
+                    response
+                } else {
+                    response.on_hover_text(format!(
+                        "No room: at most {MAX_PALETTES} palettes and {MAX_PALETTE_STOPS} stops \
+                         in total"
+                    ))
+                };
+                if response.clicked() {
+                    palettes.push(preset);
+                    ui.close();
+                }
+            }
         });
+    });
+}
+
+/// A small display drawing a gradient from the stops of a color palette
+fn gradient_display(ui: &mut Ui, stops: &[[u8; 3]]) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 14.0), egui::Sense::hover());
+    let segments = stops.len().saturating_sub(1).max(1) as f32;
+    let vertex = |x: f32, y: f32, [r, g, b]: [u8; 3]| egui::epaint::Vertex {
+        pos: egui::pos2(x, y),
+        uv: egui::epaint::WHITE_UV,
+        color: egui::Color32::from_rgb(r, g, b),
+    };
+
+    let mut mesh = egui::Mesh::default();
+    for (i, pair) in stops.windows(2).enumerate() {
+        let x0 = rect.left() + rect.width() * i as f32 / segments;
+        let x1 = rect.left() + rect.width() * (i + 1) as f32 / segments;
+        let base = mesh.vertices.len() as u32;
+        mesh.vertices.extend([
+            vertex(x0, rect.top(), pair[0]),
+            vertex(x1, rect.top(), pair[1]),
+            vertex(x1, rect.bottom(), pair[1]),
+            vertex(x0, rect.bottom(), pair[0]),
+        ]);
+        mesh.indices
+            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
+    ui.painter().add(egui::Shape::mesh(mesh));
 }
 
 #[cfg(test)]
@@ -605,5 +717,22 @@ mod tests {
         // a new size from anywhere replaces it
         state.sync_draft_img_size([400, 200]);
         assert_eq!(state.image_draft, [400, 200]);
+    }
+
+    #[test]
+    fn presets_only_fit_within_the_palette_and_stop_limits() {
+        let palette = |stops| Palette {
+            name: String::new(),
+            stops: vec![[0; 3]; stops],
+        };
+
+        assert!(can_insert(&[palette(2)], 4));
+
+        let full = vec![palette(2); MAX_PALETTES];
+        assert!(!can_insert(&full, 2));
+
+        let long = [palette(MAX_PALETTE_STOPS - 3)];
+        assert!(can_insert(&long, 3));
+        assert!(!can_insert(&long, 4));
     }
 }

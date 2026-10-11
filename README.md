@@ -12,7 +12,7 @@ This is an interactive perlin flow field particle physics simulation, that is ba
 
 | Screenshot | Screenshot |
 |------------|------------|
-| <img src="./assets/screenshot_1.jpeg" width="320" alt="Screenshot of what you can get out of it" /> | I'll add another image later|
+| <img src="./assets/screenshot_1.jpeg" width="320" alt="Screenshot of what you can get out of it" /> | <img src="./assets/screenshot_2.jpeg" width="320" alt="Screenshot of what you can get out of it" />|
 
 
 ## Running the thing

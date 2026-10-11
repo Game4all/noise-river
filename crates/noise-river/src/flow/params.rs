@@ -85,15 +85,36 @@ pub struct FlowParams {
     pub paused: bool,
 }
 
-const fn hex(rgb: u32) -> [u8; 3] {
+const fn hex_to_rgb(rgb: u32) -> [u8; 3] {
     [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8]
 }
 
-fn palette(name: &str, stops: [u32; 4]) -> Palette {
-    Palette {
-        name: name.to_owned(),
-        stops: stops.into_iter().map(hex).collect(),
+impl Palette {
+    pub fn from_hex_codes(name: &str, stops: &[u32]) -> Self {
+        Self {
+            name: name.to_owned(),
+            stops: stops.iter().copied().map(hex_to_rgb).collect(),
+        }
     }
+}
+
+/// Palettes the UI can insert. The first [`DEFAULT_PALETTE_COUNT`] are the default ones.
+pub const PALETTE_PRESETS: &[(&str, &[u32])] = &[
+    ("ember", &[0x3a0d00, 0xc8500a, 0xff8c1a, 0xffe27a]),
+    ("ocean", &[0x001a33, 0x0b4f7a, 0x0f9bd6, 0xa6e9ff]),
+    ("violet", &[0x1a0033, 0x4a1d96, 0x8a3ff2, 0xd9b8ff]),
+    ("forest", &[0x0a1f0a, 0x1f5c22, 0x4fa04f, 0xc3e6a8]),
+    ("sunset", &[0x2b0a3d, 0x9c2c5e, 0xf2634a, 0xffc15e]),
+    ("ice", &[0x0a1428, 0x2a5a8c, 0x8cc8e8, 0xf4fbff]),
+    ("mono", &[0x111111, 0x555555, 0xaaaaaa, 0xffffff]),
+    ("neon", &[0x12002b, 0xff2bd6, 0x2bf0ff, 0xf5ff7a]),
+];
+const DEFAULT_PALETTE_COUNT: usize = 4;
+
+pub fn palette_presets() -> impl Iterator<Item = Palette> {
+    PALETTE_PRESETS
+        .iter()
+        .map(|&(name, stops)| Palette::from_hex_codes(name, stops))
 }
 
 impl Default for FlowParams {
@@ -121,13 +142,8 @@ impl Default for FlowParams {
             life_seconds: Range::new(200.0 / 60.0, 500.0 / 60.0),
             max_travel_distance: 0.7,
 
-            background: hex(0x1b1610),
-            palettes: vec![
-                palette("ember", [0x3a0d00, 0xc8500a, 0xff8c1a, 0xffe27a]),
-                palette("ocean", [0x001a33, 0x0b4f7a, 0x0f9bd6, 0xa6e9ff]),
-                palette("violet", [0x1a0033, 0x4a1d96, 0x8a3ff2, 0xd9b8ff]),
-                palette("forest", [0x0a1f0a, 0x1f5c22, 0x4fa04f, 0xc3e6a8]),
-            ],
+            background: hex_to_rgb(0x1b1610),
+            palettes: palette_presets().take(DEFAULT_PALETTE_COUNT).collect(),
 
             time_scale: 1.0,
             paused: false,
@@ -439,6 +455,19 @@ mod tests {
 
         params.infinite_trails = true;
         assert_eq!(params.trail_window(900), 900);
+    }
+
+    #[test]
+    fn presets_are_usable_palettes_and_the_defaults_come_first() {
+        assert!(PALETTE_PRESETS.iter().all(|(_, stops)| stops.len() >= 2));
+        assert!(PALETTE_PRESETS.len() >= DEFAULT_PALETTE_COUNT);
+        let defaults = FlowParams::default().palettes;
+        assert!(
+            defaults
+                .iter()
+                .cloned()
+                .eq(palette_presets().take(defaults.len()))
+        );
     }
 
     #[test]
