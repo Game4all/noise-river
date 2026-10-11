@@ -4,6 +4,7 @@
 //! Set `FLOW_TEST_PNG_DIR` to write what the render tests draw there.
 
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -305,10 +306,11 @@ fn a_reset_gives_every_particle_a_trail_at_its_spawn_point() {
 
 const PERLIN_PROBE: &str = r#"
 import perlin;
+import pipeline;
 
-[[vk::binding(0, 0)]] StructuredBuffer<uint> perm;
-[[vk::binding(1, 0)]] StructuredBuffer<float2> points;
-[[vk::binding(2, 0)]] RWStructuredBuffer<float> result;
+[PipelineGlobalResource("perm")] StructuredBuffer<uint> perm;
+[PipelineGlobalResource("points")] StructuredBuffer<float2> points;
+[PipelineGlobalResource("result")] RWStructuredBuffer<float> result;
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
@@ -408,17 +410,16 @@ fn the_shader_noise_matches_the_perlin_class_of_the_html() {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
-    let bind_group = pipeline
+    let bind_groups = pipeline
         .layout
-        .create_bind_group(
+        .create_bind_groups(
             &device,
-            0,
             "perlin probe",
-            [
+            &HashMap::from([
                 ("perm", perm.as_entire_binding()),
                 ("points", points.as_entire_binding()),
                 ("result", result.as_entire_binding()),
-            ],
+            ]),
         )
         .unwrap();
 
@@ -426,7 +427,9 @@ fn the_shader_noise_matches_the_perlin_class_of_the_html() {
     {
         let mut pass = encoder.begin_compute_pass(&Default::default());
         pass.set_pipeline(&pipeline.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        for (set, group) in bind_groups.sets() {
+            pass.set_bind_group(set, group, &[]);
+        }
         pass.dispatch_workgroups(HTML_NOISE.len() as u32, 1, 1);
     }
     queue.submit([encoder.finish()]);

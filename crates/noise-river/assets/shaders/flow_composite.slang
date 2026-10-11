@@ -7,8 +7,10 @@
 // The smooth filter averages the texels under one screen pixel: bilinear taps spread over that
 // footprint. When enlarging, the footprint is under a texel and a single tap is plain bilinear.
 
-[[vk::binding(0, 0)]] Texture2D<float4> trails;
-[[vk::binding(1, 0)]] SamplerState trailSampler;
+import pipeline;
+
+[PipelineGlobalResource("trails")] Texture2D<float4> trails;
+[PipelineGlobalResource("trailSampler")] SamplerState trailSampler;
 
 struct Push
 {

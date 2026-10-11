@@ -4,9 +4,10 @@
 // point, FLAG_MOVED appends, and a frozen particle adds nothing.
 
 import particles;
+import pipeline;
 
-[[vk::binding(1, 0)]] RWStructuredBuffer<Particle> particles;
-[[vk::binding(2, 0)]] RWStructuredBuffer<uint> history;
+[PipelineGlobalResource("particles")] RWStructuredBuffer<Particle> particles;
+[PipelineGlobalResource("history")] RWStructuredBuffer<uint> history;
 
 [shader("compute")]
 [numthreads(256, 1, 1)]

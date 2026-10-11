@@ -7,7 +7,10 @@ use serde::Deserialize;
 use crate::{
     error::UnsupportedType,
     shader::{Binding, EntryPoint, ShaderReflection, VertexInput},
-    types::{BindingKind, SampleType, ShaderStage, StorageAccess, TextureDimension, VertexFormat},
+    types::{
+        Attribute, BindingKind, SampleType, ShaderStage, StorageAccess, TextureDimension,
+        VertexFormat,
+    },
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -26,6 +29,7 @@ struct VarLayout {
     #[serde(rename = "type")]
     ty: TypeLayout,
     semantic_name: Option<String>,
+    user_attribs: Vec<Attribute>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -173,7 +177,7 @@ fn visit_var(
                 }
                 return Ok(());
             }
-            emit(out, path, set, slot, &var.ty)
+            emit(out, path, set, slot, &var.ty, &var.user_attribs)
         }
         other => Err(build_unsupported(
             path,
@@ -208,7 +212,7 @@ fn visit_block(
             kind: "constantBuffer".into(),
             ..Default::default()
         };
-        emit(out, path, set, index, &ubo)?;
+        emit(out, path, set, index, &ubo, &param.user_attribs)?;
     }
 
     let start = slot_of(&element.bindings).unwrap_or(0);
@@ -228,6 +232,7 @@ fn emit(
     set: u32,
     binding: u32,
     ty: &TypeLayout,
+    attributes: &[Attribute],
 ) -> Result<(), UnsupportedType> {
     let (ty, count) = if ty.kind == "array" {
         let count = match ty.element_count {
@@ -254,6 +259,7 @@ fn emit(
         binding,
         count,
         kind: binding_kind(path, ty)?,
+        attributes: attributes.to_vec(),
     });
     Ok(())
 }
@@ -519,6 +525,27 @@ mod tests {
         assert_eq!(
             binding(&module, "res.b").kind,
             BindingKind::StorageBuffer { read_only: true }
+        );
+    }
+
+    #[test]
+    fn user_attributes_end_up_on_their_bindings() {
+        use crate::types::AttributeArg;
+
+        let module = load(&testdata::json("named"));
+        let named = |name| binding(&module, name).string_attribute("PipelineGlobalResource");
+
+        assert_eq!(named("params"), Some("params"));
+        assert_eq!(named("particles"), Some("particles"));
+        assert_eq!(named("block.tex"), Some("block.tex"));
+        assert_eq!(named("plain"), None);
+        assert_eq!(named("block.samp"), None);
+        assert_eq!(
+            binding(&module, "params")
+                .attribute("PipelineGlobalResource")
+                .unwrap()
+                .arguments,
+            [AttributeArg::String("params".into())]
         );
     }
 

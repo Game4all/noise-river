@@ -28,9 +28,11 @@ pub enum PipelineError {
     /// An override for no reflected binding, likely a typo.
     #[error("binding override `{name}` doesn't match any shader binding")]
     UnknownOverride { name: String },
-    /// A bind group named a resource the pipeline lacks in that set.
-    #[error("the pipeline has no binding `{name}` in set {set}")]
-    UnknownBinding { name: String, set: u32 },
+    /// A binding without `[PipelineGlobalResource]`, so there is nothing to look its resource up by.
+    #[error("binding `{name}` has no PipelineGlobalResource attribute")]
+    UnnamedBinding { name: String },
+    #[error("no resource named `{name}` for pipeline `{pipeline}`")]
+    MissingResource { name: String, pipeline: String },
     #[error("set {set} binding {binding} is `{first}` in one stage and `{second}` in another")]
     BindingConflict {
         set: u32,

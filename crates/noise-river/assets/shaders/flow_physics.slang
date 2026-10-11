@@ -4,10 +4,11 @@
 // Turn never accumulates, so particles don't spiral.
 
 import particles;
+import pipeline;
 import perlin;
 
-[[vk::binding(1, 0)]] StructuredBuffer<uint> perm;
-[[vk::binding(2, 0)]] RWStructuredBuffer<Particle> particles;
+[PipelineGlobalResource("perm")] StructuredBuffer<uint> perm;
+[PipelineGlobalResource("particles")] RWStructuredBuffer<Particle> particles;
 
 [shader("compute")]
 [numthreads(256, 1, 1)]

@@ -1,5 +1,7 @@
 //! What a shader declares, in API-neutral terms. Callers map them to their own API.
 
+use serde::Deserialize;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShaderStage {
     Vertex,
@@ -15,6 +17,22 @@ pub enum TextureDimension {
     D3,
     Cube,
     CubeArray,
+}
+
+/// A user-defined attribute, like `[PipelineGlobalResource("params")]`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Attribute {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: Vec<AttributeArg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum AttributeArg {
+    Int(i64),
+    Float(f64),
+    String(String),
 }
 
 /// A `(descriptor set, binding)` pair.

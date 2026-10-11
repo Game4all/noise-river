@@ -14,4 +14,4 @@ pub mod types;
 pub use error::{ReflectionError, SpirvError, UnsupportedType};
 pub use shader::{Binding, EntryPoint, GLOBALS_NAME, ShaderReflection, VertexInput};
 pub use spirv::words as spirv_words;
-pub use types::Slot;
+pub use types::{Attribute, AttributeArg, Slot};

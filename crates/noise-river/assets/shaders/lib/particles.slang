@@ -4,6 +4,7 @@
 // it declare themselves. `params` is here since every pass reads it: always set 0, binding 0.
 
 import rng;
+import pipeline;
 
 public static const uint FLAG_MOVED = 1u;      // physics moved the particle this tick
 public static const uint FLAG_RESPAWNED = 2u;  // lifetime gave the particle a new life this tick
@@ -71,7 +72,7 @@ public struct SimParams
     public float4 paletteStops[64];  // sRGB 0..1
 };
 
-[[vk::binding(0, 0)]] public ConstantBuffer<SimParams> params;
+[PipelineGlobalResource("params")] public ConstantBuffer<SimParams> params;
 
 // ---- colors ----
 

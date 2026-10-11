@@ -61,6 +61,8 @@ pub struct PipelineLayoutInfo {
     /// Bytes of immediate data (push constants) the pipeline takes.
     pub immediate_size: u32,
     slots: HashMap<String, Slot>,
+    /// Slot, shader name and `PipelineGlobalResource` name of each binding.
+    resources: Vec<(Slot, String, Option<String>)>,
 }
 
 impl PipelineLayoutInfo {
@@ -73,39 +75,60 @@ impl PipelineLayoutInfo {
         self.slots.get(name).copied()
     }
 
-    /// Bind group of a set, from resources named as in the shader. All of them are required.
-    pub fn create_bind_group<'a>(
+    /// One bind group per set, from resources registered under the names that the shaders give
+    /// with `[PipelineGlobalResource("name")]`. Every binding in the layout needs one.
+    pub fn create_bind_groups(
         &self,
         device: &wgpu::Device,
-        set: u32,
         label: &str,
-        resources: impl IntoIterator<Item = (&'a str, wgpu::BindingResource<'a>)>,
-    ) -> Result<wgpu::BindGroup, PipelineError> {
-        let layout = self
-            .bind_group_layout(set)
-            .ok_or_else(|| PipelineError::UnknownBinding {
-                name: label.to_owned(),
-                set,
-            })?;
+        resources: &HashMap<&str, wgpu::BindingResource>,
+    ) -> Result<PipelineBindGroups, PipelineError> {
+        let mut entries = vec![Vec::new(); self.bind_group_layouts.len()];
+        for &((set, binding), ref name, ref resource) in &self.resources {
+            let resource = resource
+                .as_deref()
+                .ok_or_else(|| PipelineError::UnnamedBinding { name: name.clone() })?;
+            let found = resources
+                .get(resource)
+                .ok_or_else(|| PipelineError::MissingResource {
+                    name: resource.to_owned(),
+                    pipeline: label.to_owned(),
+                })?;
+            entries[set as usize].push(wgpu::BindGroupEntry {
+                binding,
+                resource: found.clone(),
+            });
+        }
 
-        let entries = resources
-            .into_iter()
-            .map(|(name, resource)| match self.binding(name) {
-                Some((resource_set, binding)) if resource_set == set => {
-                    Ok(wgpu::BindGroupEntry { binding, resource })
-                }
-                _ => Err(PipelineError::UnknownBinding {
-                    name: name.to_owned(),
-                    set,
-                }),
+        let groups = self
+            .bind_group_layouts
+            .iter()
+            .zip(&entries)
+            .enumerate()
+            .map(|(set, (layout, entries))| {
+                layout.as_ref().map(|layout| {
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some(&format!("{label} set {set}")),
+                        layout,
+                        entries,
+                    })
+                })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect();
+        Ok(PipelineBindGroups(groups))
+    }
+}
 
-        Ok(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(label),
-            layout,
-            entries: &entries,
-        }))
+/// The bind groups of a pipeline, indexed by set.
+pub struct PipelineBindGroups(Vec<Option<wgpu::BindGroup>>);
+
+impl PipelineBindGroups {
+    /// Every set that the pipeline uses, to pass to `set_bind_group`.
+    pub fn sets(&self) -> impl Iterator<Item = (u32, &wgpu::BindGroup)> {
+        self.0
+            .iter()
+            .enumerate()
+            .filter_map(|(set, group)| Some((set as u32, group.as_ref()?)))
     }
 }
 
@@ -385,6 +408,8 @@ struct Candidate {
     name: String,
     ty: wgpu::BindingType,
     count: Option<std::num::NonZeroU32>,
+    /// The `PipelineGlobalResource` name.
+    resource: Option<String>,
     /// Whether the entry point really uses it, or reflection just lists it as a global.
     used: bool,
     stage: wgpu::ShaderStages,
@@ -428,6 +453,7 @@ fn build_layout(
 
     let mut merged: BTreeMap<Slot, Merged> = BTreeMap::new();
     let mut slots = HashMap::new();
+    let mut resources = Vec::new();
     for candidate in candidates {
         match merged.entry(candidate.slot) {
             Entry::Vacant(entry) => {
@@ -440,6 +466,7 @@ fn build_layout(
                         wgpu::ShaderStages::empty()
                     },
                 });
+                resources.push((candidate.slot, candidate.name.clone(), candidate.resource));
                 slots.insert(candidate.name, candidate.slot);
             }
             Entry::Occupied(mut entry) if candidate.used => {
@@ -533,6 +560,7 @@ fn build_layout(
         bind_group_layouts,
         immediate_size,
         slots,
+        resources,
     })
 }
 
@@ -550,6 +578,9 @@ fn collect_candidates(
             name: binding.name.clone(),
             ty: resolve_binding_type(binding, overrides)?,
             count: binding.count,
+            resource: binding
+                .string_attribute("PipelineGlobalResource")
+                .map(str::to_owned),
             used: entry.uses(binding.slot()).unwrap_or(false),
             stage: convert::shader_stage(stage.stage),
         });
@@ -798,6 +829,37 @@ mod tests {
 
         assert_eq!(layout.binding(slang_shady::GLOBALS_NAME), Some((0, 0)));
         assert_eq!(layout.binding("res.b"), Some((0, 4)));
+    }
+
+    #[test]
+    fn bindings_without_a_name_cant_be_bound() {
+        let Some(device) = device() else {
+            eprintln!("no Vulkan adapter, skipping");
+            return;
+        };
+        let mut manager = manager();
+        let id = manager
+            .create_compute_pipeline(
+                &device,
+                &ComputePipelineDesc {
+                    label: "globals",
+                    shader: ShaderRef {
+                        module: "globals",
+                        entry_point: "csMain",
+                    },
+                    binding_overrides: &[],
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(
+            manager.compute_pipeline(id).layout.create_bind_groups(
+                &device,
+                "globals",
+                &HashMap::new()
+            ),
+            Err(PipelineError::UnnamedBinding { .. })
+        ));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::{
 };
 
 use super::EXPORT_FORMAT;
-use crate::gfx::RenderPipeline;
+use crate::gfx::{PipelineBindGroups, RenderPipeline};
 
 type Outcome = Result<PathBuf, String>;
 
@@ -64,7 +64,7 @@ impl Exporter {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         pipeline: &RenderPipeline,
-        composite: &wgpu::BindGroup,
+        composite: &PipelineBindGroups,
         size: [u32; 2],
     ) {
         if self.is_saving() {
@@ -90,7 +90,7 @@ pub(super) fn capture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &RenderPipeline,
-    composite: &wgpu::BindGroup,
+    composite: &PipelineBindGroups,
     size: [u32; 2],
 ) -> Result<Vec<u8>, String> {
     let [width, height] = size;
@@ -129,7 +129,9 @@ pub(super) fn capture(
             ..Default::default()
         });
         pass.set_pipeline(&pipeline.pipeline);
-        pass.set_bind_group(0, composite, &[]);
+        for (set, group) in composite.sets() {
+            pass.set_bind_group(set, group, &[]);
+        }
         // the target isn't sRGB, and the image is copied 1:1, so no decode and no filter
         pass.set_immediates(0, bytemuck::cast_slice(&[0u32, 0u32]));
         pass.draw(0..3, 0..1);

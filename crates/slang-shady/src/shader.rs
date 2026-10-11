@@ -10,7 +10,10 @@ use std::{
 use crate::{
     error::{ReflectionError, UnsupportedType},
     json, spirv,
-    types::{BindingKind, SampleType, ShaderStage, Slot, StorageAccess, VertexFormat},
+    types::{
+        Attribute, AttributeArg, BindingKind, SampleType, ShaderStage, Slot, StorageAccess,
+        VertexFormat,
+    },
 };
 
 /// Name of the implicit buffer for loose `uniform` globals. Only in [`ShaderReflection::bindings`]
@@ -26,9 +29,23 @@ pub struct Binding {
     /// Set for arrays of resources.
     pub count: Option<NonZeroU32>,
     pub kind: BindingKind,
+    /// User-defined attributes on the declaration, like `[PipelineGlobalResource("params")]`.
+    pub attributes: Vec<Attribute>,
 }
 
 impl Binding {
+    pub fn attribute(&self, name: &str) -> Option<&Attribute> {
+        self.attributes.iter().find(|a| a.name == name)
+    }
+
+    /// The first string argument of an attribute.
+    pub fn string_attribute(&self, name: &str) -> Option<&str> {
+        match self.attribute(name)?.arguments.first()? {
+            AttributeArg::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
     pub fn slot(&self) -> Slot {
         (self.set, self.binding)
     }
@@ -162,6 +179,7 @@ impl ShaderReflection {
                     binding,
                     count: None,
                     kind: BindingKind::UniformBuffer,
+                    attributes: Vec::new(),
                 });
             }
         }

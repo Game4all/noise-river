@@ -2,8 +2,9 @@
 // csSpawn gives everyone a first life after a reset.
 
 import particles;
+import pipeline;
 
-[[vk::binding(1, 0)]] RWStructuredBuffer<Particle> particles;
+[PipelineGlobalResource("particles")] RWStructuredBuffer<Particle> particles;
 
 struct Push
 {

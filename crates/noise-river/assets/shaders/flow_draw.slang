@@ -9,9 +9,10 @@
 // Invisible or segmentless particles are moved out of the clip volume.
 
 import particles;
+import pipeline;
 
-[[vk::binding(1, 0)]] StructuredBuffer<Particle> particles;
-[[vk::binding(2, 0)]] StructuredBuffer<uint> history;
+[PipelineGlobalResource("particles")] StructuredBuffer<Particle> particles;
+[PipelineGlobalResource("history")] StructuredBuffer<uint> history;
 
 struct VertexOut
 {

@@ -23,11 +23,13 @@ mod ui;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
+
 use wgpu::util::DeviceExt;
 
 use crate::gfx::{
-    ComputePipeline, ComputePipelineDesc, ComputePipelineId, PipelineError, PipelineManager,
-    RenderPipelineDesc, RenderPipelineId, ShaderRef,
+    PipelineBindGroups, ComputePipeline, ComputePipelineDesc, ComputePipelineId, PipelineError,
+    PipelineManager, RenderPipelineDesc, RenderPipelineId, ShaderRef,
 };
 
 pub use params::*;
@@ -161,11 +163,11 @@ struct Simulation {
     capacity: u32,
     particles: wgpu::Buffer,
     history: wgpu::Buffer,
-    physics: wgpu::BindGroup,
-    lifetime: wgpu::BindGroup,
-    spawn: wgpu::BindGroup,
-    trails: wgpu::BindGroup,
-    draw: wgpu::BindGroup,
+    physics: PipelineBindGroups,
+    lifetime: PipelineBindGroups,
+    spawn: PipelineBindGroups,
+    trails: PipelineBindGroups,
+    draw: PipelineBindGroups,
 }
 
 impl Simulation {
@@ -193,67 +195,25 @@ impl Simulation {
             u64::from(count) * u64::from(capacity) * TRAIL_POINT_BYTES,
         );
 
-        let physics = manager
-            .compute_pipeline(ids.physics)
+        let resources = HashMap::from([
+            ("params", params.as_entire_binding()),
+            ("perm", perm.as_entire_binding()),
+            ("particles", particles.as_entire_binding()),
+            ("history", history.as_entire_binding()),
+        ]);
+        let bind = |pipeline: &ComputePipeline, label| {
+            pipeline
+                .layout
+                .create_bind_groups(device, label, &resources)
+        };
+        let physics = bind(manager.compute_pipeline(ids.physics), "flow physics")?;
+        let lifetime = bind(manager.compute_pipeline(ids.lifetime), "flow lifetime")?;
+        let spawn = bind(manager.compute_pipeline(ids.spawn), "flow spawn")?;
+        let trails = bind(manager.compute_pipeline(ids.trails), "flow trails")?;
+        let draw = manager
+            .render_pipeline(ids.draw)
             .layout
-            .create_bind_group(
-                device,
-                0,
-                "flow physics",
-                [
-                    ("params", params.as_entire_binding()),
-                    ("perm", perm.as_entire_binding()),
-                    ("particles", particles.as_entire_binding()),
-                ],
-            )?;
-        let lifetime = manager
-            .compute_pipeline(ids.lifetime)
-            .layout
-            .create_bind_group(
-                device,
-                0,
-                "flow lifetime",
-                [
-                    ("params", params.as_entire_binding()),
-                    ("particles", particles.as_entire_binding()),
-                ],
-            )?;
-        // it has the layout of the lifetime pass too, but that isn't something to rely on
-        let spawn = manager
-            .compute_pipeline(ids.spawn)
-            .layout
-            .create_bind_group(
-                device,
-                0,
-                "flow spawn",
-                [
-                    ("params", params.as_entire_binding()),
-                    ("particles", particles.as_entire_binding()),
-                ],
-            )?;
-        let trails = manager
-            .compute_pipeline(ids.trails)
-            .layout
-            .create_bind_group(
-                device,
-                0,
-                "flow trails",
-                [
-                    ("params", params.as_entire_binding()),
-                    ("particles", particles.as_entire_binding()),
-                    ("history", history.as_entire_binding()),
-                ],
-            )?;
-        let draw = manager.render_pipeline(ids.draw).layout.create_bind_group(
-            device,
-            0,
-            "flow draw",
-            [
-                ("params", params.as_entire_binding()),
-                ("particles", particles.as_entire_binding()),
-                ("history", history.as_entire_binding()),
-            ],
-        )?;
+            .create_bind_groups(device, "flow draw", &resources)?;
 
         Ok(Self {
             count,
@@ -279,8 +239,8 @@ struct TrailTarget {
     /// Physical pixels per logical pixel, as the draw pass sees them.
     pixel_scale: f32,
     view: wgpu::TextureView,
-    composite: wgpu::BindGroup,
-    composite_export: wgpu::BindGroup,
+    composite: PipelineBindGroups,
+    composite_export: PipelineBindGroups,
 }
 
 impl TrailTarget {
@@ -315,16 +275,15 @@ impl TrailTarget {
             ..Default::default()
         });
 
+        let resources = HashMap::from([
+            ("trails", wgpu::BindingResource::TextureView(&view)),
+            ("trailSampler", wgpu::BindingResource::Sampler(&sampler)),
+        ]);
         let bind = |id, label| {
-            manager.render_pipeline(id).layout.create_bind_group(
-                device,
-                0,
-                label,
-                [
-                    ("trails", wgpu::BindingResource::TextureView(&view)),
-                    ("trailSampler", wgpu::BindingResource::Sampler(&sampler)),
-                ],
-            )
+            manager
+                .render_pipeline(id)
+                .layout
+                .create_bind_groups(device, label, &resources)
         };
         let composite = bind(ids.composite, "flow composite")?;
         let composite_export = bind(ids.composite_export, "flow export")?;
@@ -602,13 +561,17 @@ impl FlowFieldSimulation {
         if std::mem::take(&mut self.reset_pending) {
             self.tick = self.tick.wrapping_add(1);
             pass.set_pipeline(&spawn.pipeline);
-            pass.set_bind_group(0, &self.sim.spawn, &[]);
+            for (set, group) in self.sim.spawn.sets() {
+                pass.set_bind_group(set, group, &[]);
+            }
             pass.set_immediates(0, &self.tick.to_le_bytes());
             pass.dispatch_workgroups(groups(spawn), 1, 1);
 
             // records spawn points: every particle needs a trail to start from
             pass.set_pipeline(&trails.pipeline);
-            pass.set_bind_group(0, &self.sim.trails, &[]);
+            for (set, group) in self.sim.trails.sets() {
+                pass.set_bind_group(set, group, &[]);
+            }
             pass.dispatch_workgroups(groups(trails), 1, 1);
         }
 
@@ -616,16 +579,22 @@ impl FlowFieldSimulation {
             self.tick = self.tick.wrapping_add(1);
 
             pass.set_pipeline(&physics.pipeline);
-            pass.set_bind_group(0, &self.sim.physics, &[]);
+            for (set, group) in self.sim.physics.sets() {
+                pass.set_bind_group(set, group, &[]);
+            }
             pass.dispatch_workgroups(groups(physics), 1, 1);
 
             pass.set_pipeline(&lifetime.pipeline);
-            pass.set_bind_group(0, &self.sim.lifetime, &[]);
+            for (set, group) in self.sim.lifetime.sets() {
+                pass.set_bind_group(set, group, &[]);
+            }
             pass.set_immediates(0, &self.tick.to_le_bytes());
             pass.dispatch_workgroups(groups(lifetime), 1, 1);
 
             pass.set_pipeline(&trails.pipeline);
-            pass.set_bind_group(0, &self.sim.trails, &[]);
+            for (set, group) in self.sim.trails.sets() {
+                pass.set_bind_group(set, group, &[]);
+            }
             pass.dispatch_workgroups(groups(trails), 1, 1);
         }
     }
@@ -652,7 +621,9 @@ impl FlowFieldSimulation {
             ..Default::default()
         });
         pass.set_pipeline(&manager.render_pipeline(self.ids.draw).pipeline);
-        pass.set_bind_group(0, &self.sim.draw, &[]);
+        for (set, group) in self.sim.draw.sets() {
+            pass.set_bind_group(set, group, &[]);
+        }
         // two vertices per point, plus one past each end for the caps (flow_draw.slang)
         pass.draw(0..2 * (trail_window + 2), 0..self.sim.count);
     }
@@ -677,7 +648,9 @@ impl FlowFieldSimulation {
             ..Default::default()
         });
         pass.set_pipeline(&manager.render_pipeline(self.ids.composite).pipeline);
-        pass.set_bind_group(0, &self.target.composite, &[]);
+        for (set, group) in self.target.composite.sets() {
+            pass.set_bind_group(set, group, &[]);
+        }
         // sRGB surfaces encode on write, so the composite decodes first
         let decode = u32::from(self.surface_format.is_srgb());
         let smooth = u32::from(self.image.filter == ScaleFilter::Smooth);
