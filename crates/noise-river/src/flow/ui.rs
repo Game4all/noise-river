@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 use std::ops::RangeInclusive;
+use std::path::PathBuf;
 
 use egui::containers::menu::{MenuButton, MenuConfig};
 use egui::{Align, Layout, PopupCloseBehavior, Slider, Ui};
@@ -24,6 +25,7 @@ pub(super) enum SettingsSection {
     Field,
     Spawn,
     Look,
+    Presets,
 }
 
 /// Formats a string with a material icon codepoint a label string
@@ -32,11 +34,12 @@ fn icon_label(icon: MaterialIcon, label: &str) -> String {
 }
 
 impl SettingsSection {
-    pub(super) const ALL: [SettingsSection; 4] = [
+    pub(super) const ALL: [SettingsSection; 5] = [
         SettingsSection::Trails,
         SettingsSection::Field,
         SettingsSection::Spawn,
         SettingsSection::Look,
+        SettingsSection::Presets,
     ];
 
     fn as_label_str(self) -> String {
@@ -45,6 +48,7 @@ impl SettingsSection {
             SettingsSection::Field => icon_label(ICON_AIR, "flow field"),
             SettingsSection::Spawn => icon_label(ICON_ADD_CIRCLE, "new particles"),
             SettingsSection::Look => icon_label(ICON_PALETTE, "look"),
+            SettingsSection::Presets => icon_label(ICON_TUNE, "presets"),
         }
     }
 }
@@ -58,6 +62,8 @@ pub struct FlowFieldSimulationUIState {
     image_draft: [u32; 2],
     /// The `image.size` that the draft was last synced to.
     seen_image_size: [u32; 2],
+    /// The outcome of the last preset save or load.
+    preset_status: Option<String>,
 }
 
 impl FlowFieldSimulationUIState {
@@ -173,13 +179,20 @@ impl FlowFieldSimulationUIState {
     ) {
         let mut open = self.open_sections.contains(&section);
         let offset = 24.0 * index as f32;
+        // just the two buttons and a status line that wraps
+        let width = match section {
+            SettingsSection::Presets => 280.0,
+            _ => 380.0,
+        };
         egui::Window::new(section.as_label_str())
             .id(egui::Id::new(section.as_label_str()))
             .open(&mut open)
             .default_pos([16.0 + offset, 48.0 + offset])
-            .default_width(380.0)
-            .vscroll(true)
-            .show(ctx, |ui| section_controls(ui, sim, section));
+            .default_width(width)
+            .show(ctx, |ui| match section {
+                SettingsSection::Presets => preset_controls(ui, sim, &mut self.preset_status),
+                _ => section_controls(ui, sim, section),
+            });
         if !open {
             self.open_sections.remove(&section);
         }
@@ -321,7 +334,73 @@ fn section_controls(ui: &mut Ui, sim: &mut FlowFieldSimulation, section: Setting
         SettingsSection::Field => field_controls(ui, &mut sim.params),
         SettingsSection::Spawn => spawn_controls(ui, &mut sim.params),
         SettingsSection::Look => look_controls(ui, &mut sim.params),
+        SettingsSection::Presets => unreachable!("drawn by `section_window`"),
     }
+}
+
+fn preset_controls(ui: &mut Ui, sim: &mut FlowFieldSimulation, status: &mut Option<String>) {
+    ui.label(
+        egui::RichText::new("Presets")
+            .strong()
+            .size(14.0)
+            .color(ui.visuals().weak_text_color()),
+    );
+
+    ui.horizontal(|ui| {
+        if ui
+            .button(icon_label(ICON_SAVE, "save preset…"))
+            .on_hover_text("Saves the settings to a JSON file.")
+            .clicked()
+        {
+            if let Some(path) = pick_save_path() {
+                *status = Some(match sim.params.save_preset(&path) {
+                    Ok(()) => format!("saved to {}", path.display()),
+                    Err(error) => format!("couldn't save: {error}"),
+                });
+            }
+        }
+
+        if ui
+            .button(icon_label(ICON_FOLDER_OPEN, "load preset…"))
+            .on_hover_text("Loads a preset from a JSON file")
+            .clicked()
+        {
+            if let Some(path) = pick_load_path() {
+                *status = Some(match FlowParams::load_preset(&path) {
+                    Ok(mut params) => {
+                        params.paused = sim.params.paused;
+                        sim.params = params;
+                        sim.request_reset();
+                        format!("loaded {}", path.display())
+                    }
+                    Err(error) => format!("couldn't load: {error}"),
+                });
+            }
+        }
+    });
+
+    if let Some(status) = status {
+        ui.weak(status.as_str());
+    }
+}
+
+/// Asks where to save a preset. `None` if the dialog was cancelled.
+fn pick_save_path() -> Option<PathBuf> {
+    let timestamp_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    rfd::FileDialog::new()
+        .add_filter("preset", &["json"])
+        .set_file_name(format!("preset_{timestamp_seconds}.json"))
+        .save_file()
+}
+
+/// Asks for a preset file. `None` if the dialog was cancelled.
+fn pick_load_path() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .add_filter("preset", &["json"])
+        .pick_file()
 }
 
 fn trail_controls(ui: &mut Ui, sim: &mut FlowFieldSimulation) {

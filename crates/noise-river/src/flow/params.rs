@@ -2,9 +2,13 @@
 //! `SimParams` and `Particle` in `assets/shaders/lib/particles.slang` byte for byte. The layout
 //! tests at the bottom pin the sizes and offsets.
 
+use std::error::Error;
 use std::f32::consts::PI;
+use std::fs;
+use std::path::Path;
 
 use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
 
 pub const MAX_PALETTES: usize = 16;
 pub const MAX_PALETTE_STOPS: usize = 64;
@@ -13,14 +17,14 @@ pub const MAX_PALETTE_STOPS: usize = 64;
 pub const TICKS_PER_SECOND: f32 = 60.0;
 
 /// A gradient: ordered stops. Particles pick a palette and a point on it at spawn.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Palette {
     pub name: String,
     /// sRGB, 2 or more.
     pub stops: Vec<[u8; 3]>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Range {
     pub min: f32,
     pub max: f32,
@@ -32,8 +36,10 @@ impl Range {
     }
 }
 
-/// Simulation knobs. Defaults are the html's `CONFIG`.
-#[derive(Debug, Clone)]
+/// Simulation knobs. Defaults are the html's `CONFIG`. Presets are saved as JSON, and keys missing
+/// from a file keep their default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FlowParams {
     // ---- particles and their trails ----
     /// Changing it respawns everyone.
@@ -81,7 +87,9 @@ pub struct FlowParams {
 
     // ---- playback ----
     /// Multiplies how fast the simulation runs.
+    #[serde(skip)]
     pub time_scale: f32,
+    #[serde(skip)]
     pub paused: bool,
 }
 
@@ -187,6 +195,30 @@ impl FlowParams {
                 .max(0.0) as u32
         };
         by_time.clamp(2.min(capacity), capacity)
+    }
+
+    /// Writes the params to `path` as JSON.
+    pub fn save_preset(&self, path: &Path) -> Result<(), Box<dyn Error>> {
+        fs::write(path, serde_json::to_string_pretty(self)?)?;
+        Ok(())
+    }
+
+    /// Reads params from the JSON file at `path`, within the palette limits.
+    pub fn load_preset(path: &Path) -> Result<Self, Box<dyn Error>> {
+        let mut params: Self = serde_json::from_str(&fs::read_to_string(path)?)?;
+
+        // bring the palettes within the limits the UI keeps
+        let mut stops = 0;
+        params.palettes.retain_mut(|palette| {
+            palette.stops.truncate(MAX_PALETTE_STOPS - stops);
+            stops += palette.stops.len();
+            palette.stops.len() >= 2
+        });
+        params.palettes.truncate(MAX_PALETTES);
+        if params.palettes.is_empty() {
+            params.palettes = palette_presets().take(DEFAULT_PALETTE_COUNT).collect();
+        }
+        Ok(params)
     }
 
     /// Builds what the shaders read. The `particle_count` and `capacity` are the
@@ -517,6 +549,66 @@ mod tests {
             follow_window: false,
         };
         assert_eq!(image.target_size(8192), [1, 1]);
+    }
+
+    /// Saves `params` to a temp file, loads them back and removes the file.
+    fn save_and_load(name: &str, params: &FlowParams) -> FlowParams {
+        let path = std::env::temp_dir().join(format!("noise-river-test-{name}.json"));
+        params.save_preset(&path).unwrap();
+        let loaded = FlowParams::load_preset(&path);
+        fs::remove_file(&path).unwrap();
+        loaded.unwrap()
+    }
+
+    #[test]
+    fn a_preset_round_trips_and_missing_keys_keep_defaults() {
+        let mut params = FlowParams::default();
+        params.noise_seed = 7;
+        params.paused = true;
+        let back = save_and_load("round-trip", &params);
+        assert_eq!(back.noise_seed, 7);
+        assert_eq!(back.speed, params.speed);
+        assert_eq!(back.palettes, params.palettes);
+        assert!(!back.paused, "paused isn't saved");
+
+        let empty: FlowParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.noise_seed, FlowParams::default().noise_seed);
+    }
+
+    #[test]
+    fn loading_drops_short_palettes_and_restores_defaults_if_none_are_left() {
+        let mut params = FlowParams {
+            palettes: vec![Palette {
+                name: "short".into(),
+                stops: vec![[1, 2, 3]],
+            }],
+            ..FlowParams::default()
+        };
+        let back = save_and_load("short-palettes", &params);
+        assert_eq!(back.palettes, FlowParams::default().palettes);
+
+        params.palettes = vec![
+            Palette {
+                name: "huge".into(),
+                stops: vec![[9, 9, 9]; 200],
+            };
+            MAX_PALETTES + 2
+        ];
+        let back = save_and_load("huge-palettes", &params);
+        assert_eq!(back.palettes.len(), 1);
+        assert_eq!(back.palettes[0].stops.len(), MAX_PALETTE_STOPS);
+    }
+
+    #[test]
+    fn loading_a_missing_or_malformed_file_is_an_error() {
+        let dir = std::env::temp_dir();
+        assert!(FlowParams::load_preset(&dir.join("noise-river-test-missing.json")).is_err());
+
+        let path = dir.join("noise-river-test-malformed.json");
+        fs::write(&path, "not json").unwrap();
+        let loaded = FlowParams::load_preset(&path);
+        fs::remove_file(&path).unwrap();
+        assert!(loaded.is_err());
     }
 
     #[test]

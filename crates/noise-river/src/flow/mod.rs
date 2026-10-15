@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
 use crate::gfx::{
-    PipelineBindGroups, ComputePipeline, ComputePipelineDesc, ComputePipelineId, PipelineError,
+    ComputePipeline, ComputePipelineDesc, ComputePipelineId, PipelineBindGroups, PipelineError,
     PipelineManager, RenderPipelineDesc, RenderPipelineId, ShaderRef,
 };
 

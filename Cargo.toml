@@ -22,5 +22,6 @@ thiserror = "2"
 build-rs = "0.3"
 bytemuck = { version = "1", features = ["derive"] }
 png = "0.18"
+rfd = "0.17"
 
 slang-shady = { path = "crates/slang-shady" }
