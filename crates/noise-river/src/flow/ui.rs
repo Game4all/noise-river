@@ -523,7 +523,7 @@ fn field_controls(ui: &mut Ui, params: &mut FlowParams) {
 fn spawn_controls(ui: &mut Ui, params: &mut FlowParams) {
     ui.label("Every particle rolls these once when it spawns, so they only change new ones.");
 
-    range_sliders(
+    range_slider(
         ui,
         "speed",
         &mut params.speed,
@@ -531,7 +531,7 @@ fn spawn_controls(ui: &mut Ui, params: &mut FlowParams) {
         "",
         "Pixels moved per tick. A wider range shows more variety between fast and slow strands.",
     );
-    range_sliders(
+    range_slider(
         ui,
         "point size",
         &mut params.point_size,
@@ -539,7 +539,7 @@ fn spawn_controls(ui: &mut Ui, params: &mut FlowParams) {
         "",
         "The stroke width of the particle's strand, in pixels.",
     );
-    range_sliders(
+    range_slider(
         ui,
         "life",
         &mut params.life_seconds,
@@ -589,8 +589,9 @@ fn look_controls(ui: &mut Ui, params: &mut FlowParams) {
     palette_editor(ui, &mut params.palettes);
 }
 
-/// Min and max sliders that keep `min <= max`, pushing the other end.
-fn range_sliders(
+/// One slider with a handle for each end of `range`, and a value box on each side.
+/// The handles stop at each other, so `min <= max` always holds.
+fn range_slider(
     ui: &mut Ui,
     name: &str,
     range: &mut Range,
@@ -598,29 +599,87 @@ fn range_sliders(
     suffix: &str,
     hover: &str,
 ) {
-    let min = ui
-        .add(
-            Slider::new(&mut range.min, bounds.clone())
-                .suffix(suffix)
-                .text(format!("min {name}")),
-        )
-        .on_hover_text(hover)
-        .changed();
-    let max = ui
-        .add(
-            Slider::new(&mut range.max, bounds)
-                .suffix(suffix)
-                .text(format!("max {name}")),
-        )
-        .on_hover_text(hover)
-        .changed();
+    let (lo, hi) = (*bounds.start(), *bounds.end());
+    let speed = (hi - lo) / 300.0;
 
-    if min && range.min > range.max {
-        range.max = range.min;
-    }
-    if max && range.max < range.min {
-        range.min = range.max;
-    }
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut range.min)
+                .range(lo..=range.max)
+                .speed(speed)
+                .suffix(suffix),
+        )
+        .on_hover_text(hover);
+
+        let size = egui::vec2(ui.spacing().slider_width, ui.spacing().interact_size.y);
+        let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+        let radius = rect.height() / 2.5;
+        let x_range = rect.x_range().shrink(radius);
+        let to_x = |value: f32| egui::remap_clamp(value, lo..=hi, x_range.min..=x_range.max);
+
+        if let Some(pointer) = response.interact_pointer_pos() {
+            let value = egui::remap_clamp(pointer.x, x_range.min..=x_range.max, lo..=hi);
+            let nearest_is_max = (value - range.max).abs() < (value - range.min).abs()
+                || (range.min == range.max && value > range.max);
+            // keep hold of the handle grabbed at the start of a drag, even once they meet
+            let grab_max = if response.drag_started() || response.clicked() {
+                ui.data_mut(|d| d.insert_temp(response.id, nearest_is_max));
+                nearest_is_max
+            } else {
+                ui.data(|d| d.get_temp(response.id)).unwrap_or(nearest_is_max)
+            };
+
+            if response.dragged() || response.clicked() {
+                let before = *range;
+                if grab_max {
+                    range.max = value.max(range.min);
+                } else {
+                    range.min = value.min(range.max);
+                }
+                if *range != before {
+                    response.mark_changed();
+                }
+            }
+        }
+
+        if ui.is_rect_visible(rect) {
+            let visuals = *ui.style().interact(&response);
+            let widgets = &ui.visuals().widgets;
+            let corner_radius = widgets.inactive.corner_radius;
+            let rail_radius = (ui.spacing().slider_rail_height / 2.0).max(0.0);
+            let rail = egui::Rect::from_x_y_ranges(
+                rect.x_range(),
+                rect.center().y - rail_radius..=rect.center().y + rail_radius,
+            );
+            let (min_x, max_x) = (to_x(range.min), to_x(range.max));
+
+            let painter = ui.painter();
+            painter.rect_filled(rail, corner_radius, widgets.inactive.bg_fill);
+            painter.rect_filled(
+                egui::Rect::from_x_y_ranges(min_x..=max_x, rail.y_range()),
+                corner_radius,
+                ui.visuals().selection.bg_fill,
+            );
+            for x in [min_x, max_x] {
+                painter.circle(
+                    egui::pos2(x, rect.center().y),
+                    radius + visuals.expansion,
+                    visuals.bg_fill,
+                    visuals.fg_stroke,
+                );
+            }
+        }
+        response.on_hover_text(hover);
+
+        ui.add(
+            egui::DragValue::new(&mut range.max)
+                .range(range.min..=hi)
+                .speed(speed)
+                .suffix(suffix),
+        )
+        .on_hover_text(hover);
+        ui.label(name).on_hover_text(hover);
+    });
 }
 
 /// What a palette row asks the editor to do after it was drawn.
