@@ -23,5 +23,6 @@ build-rs = "0.3"
 bytemuck = { version = "1", features = ["derive"] }
 png = "0.18"
 rfd = "0.17"
+rust-embed = { version = "8.13", features = ["interpolate-folder-path", "debug-embed"] }
 
 slang-shady = { path = "crates/slang-shady" }

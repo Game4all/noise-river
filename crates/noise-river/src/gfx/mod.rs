@@ -13,12 +13,11 @@ use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use wgpu::InstanceFlags;
 use winit::window::Window;
 
-/// Directory of the precompiled shaders, next to the executable.
-fn compiled_shader_dir() -> std::path::PathBuf {
-    std::env::current_exe()
-        .expect("Failed to locate the executable")
-        .with_file_name("shaders")
-}
+/// App shaders embedded into the binary. 
+/// All shaders + reflection data written to $OUT_DIR/shaders end up in here.
+#[derive(rust_embed::Embed)]
+#[folder = "$OUT_DIR/shaders"]
+pub struct EmbeddedShaders;
 
 /// Holds the wgpu resources (Device, Queue, Surface) and manages the swapchain.
 #[allow(dead_code)]
@@ -102,7 +101,7 @@ impl GfxContext {
             queue,
             surface_config,
             surface,
-            pipelines: PipelineManager::new(compiled_shader_dir()),
+            pipelines: PipelineManager::new(ShaderSource::Embedded),
             pending_surface_reconfiguration: false,
         }
     }

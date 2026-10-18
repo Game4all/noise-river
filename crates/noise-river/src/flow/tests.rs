@@ -12,15 +12,11 @@ use std::{
 };
 
 use super::*;
-use crate::gfx::{PipelineManager, test_device};
+use crate::gfx::{PipelineManager, ShaderSource, test_device};
 
 /// Not a multiple of 64 wide, so readback rows need padding.
 const SIZE: [u32; 2] = [500, 300];
 const BACKGROUND: [u8; 3] = [0x1b, 0x16, 0x10];
-
-fn shader_dir() -> PathBuf {
-    PathBuf::from(env!("OUT_DIR")).join("shaders")
-}
 
 fn debug_png(name: &str, size: [u32; 2], rgba: &[u8]) {
     if let Some(dir) = std::env::var_os("FLOW_TEST_PNG_DIR") {
@@ -49,7 +45,7 @@ impl Harness {
             eprintln!("no Vulkan adapter, skipping");
             return None;
         };
-        let mut manager = PipelineManager::new(shader_dir());
+        let mut manager = PipelineManager::new(ShaderSource::Embedded);
         let field = FlowFieldSimulation::new(&device, &mut manager, format, size, scale)
             .unwrap_or_else(|err| panic!("the flow field failed to build: {err}"));
 
@@ -370,7 +366,7 @@ fn the_shader_noise_matches_the_perlin_class_of_the_html() {
         eprintln!("no Vulkan adapter, skipping");
         return;
     };
-    let mut manager = PipelineManager::new(perlin_probe_dir());
+    let mut manager = PipelineManager::new(ShaderSource::Dir(perlin_probe_dir().into()));
     let id = manager
         .create_compute_pipeline(
             &device,

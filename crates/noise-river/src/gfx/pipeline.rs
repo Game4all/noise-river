@@ -1,5 +1,6 @@
 //! Loads precompiled slang SPIR-V modules, and builds render and compute pipelines from them.
-//! Layouts come from each module's `<name>.spv` and `<name>.json` pair, written by build.rs.
+//! Layouts come from each module's `<name>.spv` and `<name>.json` pair, embedded from build.rs's
+//! output, or read from a directory in tests.
 
 // the app doesn't use all of this API yet
 #![allow(dead_code)]
@@ -7,14 +8,14 @@
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap, btree_map::Entry},
-    fs,
+    fs, io,
     path::PathBuf,
     sync::Arc,
 };
 
 use slang_shady::{EntryPoint, ShaderReflection, Slot, types::ShaderStage};
 
-use super::{convert, error::PipelineError};
+use super::{EmbeddedShaders, convert, error::PipelineError};
 
 /// A shader module loaded by [`PipelineManager::load_module`].
 pub struct ShaderModule {
@@ -149,20 +150,49 @@ pub struct RenderPipelineId(usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ComputePipelineId(usize);
 
+/// Denotes the source of a shader module.
+/// Can be either on disk or embedded in the executable.
+pub enum ShaderSource {
+    /// Embedded into the executable through rust_embed, see [`EmbeddedShaders`].
+    Embedded,
+    /// Points to a directory containing the compiled SPIR-V modules and reflection JSON files.
+    Dir(PathBuf),
+}
+
 pub struct PipelineManager {
-    shader_dir: PathBuf,
+    source: ShaderSource,
     modules: HashMap<String, Arc<ShaderModule>>,
     render: Vec<RenderPipeline>,
     compute: Vec<ComputePipeline>,
 }
 
 impl PipelineManager {
-    pub fn new(shader_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(source: ShaderSource) -> Self {
         Self {
-            shader_dir: shader_dir.into(),
+            source,
             modules: HashMap::new(),
             render: Vec::new(),
             compute: Vec::new(),
+        }
+    }
+
+    /// Reads one compiled shader file from the source.
+    fn read(&self, file: &str) -> Result<Cow<'static, [u8]>, PipelineError> {
+        match &self.source {
+            ShaderSource::Embedded => {
+                EmbeddedShaders::get(file)
+                    .map(|f| f.data)
+                    .ok_or_else(|| PipelineError::Io {
+                        path: file.into(),
+                        source: io::ErrorKind::NotFound.into(),
+                    })
+            }
+            ShaderSource::Dir(dir) => {
+                let path = dir.join(file);
+                fs::read(&path)
+                    .map(Cow::Owned)
+                    .map_err(|source| PipelineError::Io { path, source })
+            }
         }
     }
 
@@ -176,24 +206,20 @@ impl PipelineManager {
             return Ok(module.clone());
         }
 
-        let spv_path = self.shader_dir.join(format!("{name}.spv"));
-        let json_path = self.shader_dir.join(format!("{name}.json"));
-
-        let bytes = fs::read(&spv_path).map_err(|source| PipelineError::Io {
-            path: spv_path.clone(),
-            source,
-        })?;
+        let bytes = self.read(&format!("{name}.spv"))?;
         let invalid = |source: slang_shady::ReflectionError| PipelineError::Reflection {
             module: name.to_owned(),
             source,
         };
         let words = slang_shady::spirv_words(&bytes).map_err(|e| invalid(e.into()))?;
 
-        let json = fs::read_to_string(&json_path).map_err(|source| PipelineError::Io {
-            path: json_path.clone(),
-            source,
+        let json_file = format!("{name}.json");
+        let json = self.read(&json_file)?;
+        let json = std::str::from_utf8(&json).map_err(|e| PipelineError::Io {
+            path: json_file.into(),
+            source: io::Error::new(io::ErrorKind::InvalidData, e),
         })?;
-        let reflection = ShaderReflection::from_sources(&json, Some(&words)).map_err(invalid)?;
+        let reflection = ShaderReflection::from_sources(json, Some(&words)).map_err(invalid)?;
 
         let entry_points: Vec<_> = reflection
             .entry_points
@@ -627,7 +653,7 @@ mod tests {
     }
 
     fn manager() -> PipelineManager {
-        PipelineManager::new(slang_shady::testdata::dir())
+        PipelineManager::new(ShaderSource::Dir(slang_shady::testdata::dir().into()))
     }
 
     fn render_desc<'a>(

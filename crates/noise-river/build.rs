@@ -24,8 +24,7 @@ const WGPU_SPIRV_FLAGS: &[&str] = &[
     "-fvk-use-entrypoint-name",
 ];
 
-/// Compiles each top-level `assets/shaders/*.slang` to `.spv` and `.json` in `OUT_DIR`, then
-/// installs them next to the executable. `lib/` is only reached through `import`.
+/// Compiles each top-level `assets/shaders/*.slang` to `.spv` and `.json` in `OUT_DIR`.
 fn main() {
     let manifest_dir = input::cargo_manifest_dir();
     let shader_dir = manifest_dir.join(SHADER_DIR);
@@ -38,7 +37,7 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("slangc"));
 
-    // OUT_DIR persists between builds: start clean so removed shaders don't get installed
+    // OUT_DIR persists between builds: start clean so removed shaders don't get embedded
     let _ = fs::remove_dir_all(&out_dir);
     fs::create_dir_all(&out_dir).expect("Failed to create the shader output directory");
 
@@ -48,12 +47,10 @@ fn main() {
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "slang"));
 
-    let mut failed = false;
     for source in sources {
         match compile(&slangc, &shader_dir, &source, &out_dir) {
             Ok(()) => {}
             Err(CompileError::Source(stderr)) => {
-                failed = true;
                 // output::error panics on newlines, so we need to hack this by emitting one line per call
                 output::error(&format!("slangc failed to compile {}:", source.display()));
                 for line in stderr.lines() {
@@ -68,31 +65,6 @@ fn main() {
                 std::process::exit(1);
             }
         }
-    }
-
-    // a failed shader leaves the executable's shaders as they were; the errors above fail the build
-    if !failed {
-        install(&out_dir);
-    }
-}
-
-/// Copies the compiled shaders to the directory that the executable is built in.
-fn install(out_dir: &Path) {
-    // no profile dir from cargo: OUT_DIR is `<target>/[<triple>/]<profile>/build/<pkg>-<hash>/out`
-    let bin_dir = input::out_dir()
-        .ancestors()
-        .nth(3)
-        .expect("OUT_DIR is not inside a target directory")
-        .join(COMPILED_DIR);
-
-    // start over: drop stale shaders
-    let _ = fs::remove_dir_all(&bin_dir);
-    fs::create_dir_all(&bin_dir).expect("Failed to create the shader directory");
-
-    for file in fs::read_dir(out_dir).expect("Failed to read the compiled shaders") {
-        let file = file.expect("Failed to read the compiled shaders").path();
-        fs::copy(&file, bin_dir.join(file.file_name().unwrap()))
-            .expect("Failed to copy a compiled shader");
     }
 }
 
