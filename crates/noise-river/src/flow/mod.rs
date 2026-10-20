@@ -1,5 +1,5 @@
-//! A Perlin flow field of particles, simulated and drawn on the GPU. It matches
-//! flow_field_example.html. The passes are slang shaders (`assets/shaders/flow_*.slang`):
+//! A Perlin flow field of particles, simulated and drawn on the GPU. The passes are
+//! slang shaders (`assets/shaders/flow_*.slang`):
 //!
 //! | pass      | shader          | runs             | does                                              |
 //! |-----------|-----------------|------------------|---------------------------------------------------|
@@ -427,8 +427,8 @@ impl FlowFieldSimulation {
     }
 
     /// Applies the image settings and the `params` changes that need buffers: particle count, trail
-    /// capacity, noise seed. A new simulated area starts the particles over, as the html does when
-    /// its window resizes. A new render scale only changes the trail texture.
+    /// capacity, noise seed. A new simulated area starts the particles over. A new render
+    /// scale only changes the trail texture.
     ///
     /// # Panics
     /// If the shaders and bind groups disagree. [`FlowFieldSimulation::new`] fails first.

@@ -1,6 +1,5 @@
-//! The flow field's controls, as in the html's panel, plus the knobs that only `CONFIG` had there.
-//! A menu bar on top holds the simulation buttons and readouts, and a settings menu that opens one
-//! window per section. The html's help text is on hover.
+//! The flow field's controls. A menu bar on top holds the simulation buttons and readouts, and a
+//! settings menu that opens one window per section. Help text is on hover.
 
 use std::collections::HashSet;
 use std::ops::RangeInclusive;
@@ -511,7 +510,7 @@ fn field_controls(ui: &mut Ui, params: &mut FlowParams) {
     ui.horizontal(|ui| {
         ui.add(egui::DragValue::new(&mut params.noise_seed));
         ui.label("noise seed")
-            .on_hover_text("Picks the noise field. 42 is the one of the html.");
+            .on_hover_text("Picks the noise field.");
     });
 
     ui.add(Slider::new(&mut params.time_scale, 0.0..=4.0).text("speed of time"))

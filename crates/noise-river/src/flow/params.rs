@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_PALETTES: usize = 16;
 pub const MAX_PALETTE_STOPS: usize = 64;
 
-/// Fixed simulation rate. The html's per-frame values (speed, trail points at 60 fps) are per tick.
+/// Fixed simulation rate. Per-frame values (speed, trail points) are per tick at 60 fps.
 pub const TICKS_PER_SECOND: f32 = 60.0;
 
 /// A gradient: ordered stops. Particles pick a palette and a point on it at spawn.
@@ -36,8 +36,7 @@ impl Range {
     }
 }
 
-/// Simulation knobs. Defaults are the html's `CONFIG`. Presets are saved as JSON, and keys missing
-/// from a file keep their default.
+/// Simulation knobs. Presets are saved as JSON, and keys missing from a file keep their default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FlowParams {
@@ -146,7 +145,7 @@ impl Default for FlowParams {
 
             speed: Range::new(0.8, 3.2),
             point_size: Range::new(0.6, 2.5),
-            // 200 to 500 frames in the html
+            // 200 to 500 ticks
             life_seconds: Range::new(200.0 / 60.0, 500.0 / 60.0),
             max_travel_distance: 0.7,
 
@@ -456,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn bias_matches_the_html() {
+    fn bias_angle_and_deviation() {
         let mut params = FlowParams::default(); // straight down
         assert!((params.bias_angle() - PI / 2.0).abs() < 1e-6);
         assert!((params.max_deviation() - 0.55).abs() < 1e-6);

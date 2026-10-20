@@ -87,7 +87,7 @@ public float3 unpackColor(uint c)
     return float3(float(c & 255u), float((c >> 8u) & 255u), float((c >> 16u) & 255u)) / 255.0;
 }
 
-/// Lerps between the two stops around t in 0..1, in sRGB, like `sampleGradient` in the html.
+/// Lerps between the two stops around t in 0..1, in sRGB.
 float3 samplePalette(uint palette, float t)
 {
     uint first = params.palettes[palette].x;
@@ -150,8 +150,7 @@ public void respawn(inout Particle p, uint index, uint tick)
     p.pad = 0u;
 }
 
-/// Strand opacity by age: 1 until `fadeStartTicks`, then linear to 0 at the end of life. Matches
-/// `ageFadeMultiplier` in the html.
+/// Strand opacity by age: 1 until `fadeStartTicks`, then linear to 0 at the end of life.
 public float ageFade(float age, float life)
 {
     if (age <= params.fadeStartTicks)

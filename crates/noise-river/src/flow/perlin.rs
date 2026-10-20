@@ -1,11 +1,11 @@
-//! Perlin permutation table, built as the `Perlin` class of flow_field_example.html builds it, so a
-//! seed gives the same field. The noise is in `assets/shaders/lib/perlin.slang`.
+//! Perlin permutation table, a seeded xorshift32 Fisher-Yates shuffle, so a seed
+//! always gives the same field. The noise is in `assets/shaders/lib/perlin.slang`.
 
 /// The 256 entry permutation, twice, so the shader can index past the first copy.
 pub fn permutation(seed: u32) -> [u32; 512] {
     let mut p: [u32; 256] = std::array::from_fn(|i| i as u32);
 
-    // xorshift32 with JS integer semantics: `s` stays int32 through the xors, `>>>` is unsigned,
+    // xorshift32 on int32: `s` stays int32 through the xors, the right shift is unsigned,
     // and only the output becomes a double.
     let mut s = seed as i32;
     let mut rand = move || {
@@ -26,9 +26,9 @@ pub fn permutation(seed: u32) -> [u32; 512] {
 mod tests {
     use super::*;
 
-    /// From the `Perlin` class of flow_field_example.html itself, run in a JS engine with seed 42.
+    /// Pinned permutation for seed 42.
     #[test]
-    fn seed_42_gives_the_permutation_of_the_html() {
+    fn seed_42_gives_the_pinned_permutation() {
         let perm = permutation(42);
 
         assert_eq!(

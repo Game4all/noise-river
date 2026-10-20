@@ -1,5 +1,4 @@
-// 2D Perlin noise, ported from the `Perlin` class in flow_field_example.html. The 512 entry
-// permutation comes from flow/perlin.rs.
+// 2D Perlin noise. The 512 entry permutation comes from flow/perlin.rs.
 
 float perlinFade(float t)
 {

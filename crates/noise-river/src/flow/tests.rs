@@ -350,8 +350,8 @@ fn perlin_probe_dir() -> &'static Path {
     })
 }
 
-/// What the `Perlin` class of flow_field_example.html gives for seed 42, from a JS engine.
-const HTML_NOISE: [([f32; 2], f32); 6] = [
+/// Pinned noise values for seed 42.
+const EXPECTED_NOISE: [([f32; 2], f32); 6] = [
     ([0.5, 0.5], 0.25),
     ([3.7, 1.2], -0.437_429_76),
     ([12.25, 40.75], -0.889_200_2),
@@ -361,7 +361,7 @@ const HTML_NOISE: [([f32; 2], f32); 6] = [
 ];
 
 #[test]
-fn the_shader_noise_matches_the_perlin_class_of_the_html() {
+fn the_shader_noise_matches_the_pinned_values() {
     let Some((device, queue)) = test_device() else {
         eprintln!("no Vulkan adapter, skipping");
         return;
@@ -394,7 +394,7 @@ fn the_shader_noise_matches_the_perlin_class_of_the_html() {
         bytemuck::cast_slice(&perlin::permutation(42)),
         wgpu::BufferUsages::STORAGE,
     );
-    let points: Vec<[f32; 2]> = HTML_NOISE.iter().map(|(point, _)| *point).collect();
+    let points: Vec<[f32; 2]> = EXPECTED_NOISE.iter().map(|(point, _)| *point).collect();
     let points = init(
         "points",
         bytemuck::cast_slice(&points),
@@ -402,7 +402,7 @@ fn the_shader_noise_matches_the_perlin_class_of_the_html() {
     );
     let result = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("result"),
-        size: (HTML_NOISE.len() * 4) as u64,
+        size: (EXPECTED_NOISE.len() * 4) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -426,15 +426,15 @@ fn the_shader_noise_matches_the_perlin_class_of_the_html() {
         for (set, group) in bind_groups.sets() {
             pass.set_bind_group(set, group, &[]);
         }
-        pass.dispatch_workgroups(HTML_NOISE.len() as u32, 1, 1);
+        pass.dispatch_workgroups(EXPECTED_NOISE.len() as u32, 1, 1);
     }
     queue.submit([encoder.finish()]);
 
-    let got: Vec<f32> = read_buffer(&device, &queue, &result, HTML_NOISE.len());
-    for ((point, expected), got) in HTML_NOISE.iter().zip(got) {
+    let got: Vec<f32> = read_buffer(&device, &queue, &result, EXPECTED_NOISE.len());
+    for ((point, expected), got) in EXPECTED_NOISE.iter().zip(got) {
         assert!(
             (got - expected).abs() < 1e-4,
-            "noise at {point:?} is {got}, the html says {expected}"
+            "noise at {point:?} is {got}, expected {expected}"
         );
     }
 }
