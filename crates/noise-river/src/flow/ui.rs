@@ -103,16 +103,30 @@ impl FlowFieldSimulationUIState {
     }
 
     fn sim_controls(&mut self, ui: &mut Ui, sim: &mut FlowFieldSimulation) {
-        let (icon, hover) = if sim.params.paused {
-            (ICON_PLAY_ARROW, "Resumes the simulation.")
+        let (icon, text, hover) = if sim.params.paused {
+            (ICON_PLAY_ARROW, "play", "Resumes the simulation.")
         } else {
-            (ICON_PAUSE, "Pauses the simulation.")
+            (ICON_PAUSE, "pause", "Pauses the simulation.")
         };
-        if ui.button(icon.codepoint).on_hover_text(hover).clicked() {
+        if ui
+            .button(icon_label(icon, text))
+            .on_hover_text(hover)
+            .clicked()
+        {
             sim.params.paused = !sim.params.paused;
         }
+
+        // the sliders are edited in place, so only a click outside closes the popover
+        let config = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
+        let label = icon_label(ICON_SCHEDULE, &format!("{:.2}x", sim.params.time_scale));
+        let (response, _) = MenuButton::new(label).config(config).ui(ui, |ui| {
+            ui.set_min_width(300.0);
+            time_controls(ui, &mut sim.params);
+        });
+        response.on_hover_text("The speed of time. Click to change it and the field morphing.");
+
         if ui
-            .button(ICON_REPLAY.codepoint)
+            .button(icon_label(ICON_REPLAY, "restart"))
             .on_hover_text("Starts every particle over at a random spot.")
             .clicked()
         {
@@ -120,7 +134,7 @@ impl FlowFieldSimulationUIState {
         }
         let saving = sim.export.is_saving();
         if ui
-            .add_enabled(!saving, egui::Button::new(ICON_DOWNLOAD.codepoint))
+            .add_enabled(!saving, egui::Button::new(icon_label(ICON_DOWNLOAD, "save image")))
             .on_hover_text(
                 "Saves the image as a PNG in the working directory, at the resolution of the \
                  image.",
@@ -140,7 +154,7 @@ impl FlowFieldSimulationUIState {
         );
         // the controls are edited in place, so only a click outside closes the popover
         let config = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
-        let (response, _) = MenuButton::new(format!("{width}×{height} px"))
+        let (response, _) = MenuButton::new(icon_label(ICON_IMAGE, &format!("{width}×{height} px")))
             .config(config)
             .ui(ui, |ui| {
                 ui.set_min_width(300.0);
@@ -512,11 +526,61 @@ fn field_controls(ui: &mut Ui, params: &mut FlowParams) {
         ui.label("noise seed")
             .on_hover_text("Picks the noise field.");
     });
+}
 
+/// A small heading that sets off a group of controls inside a section.
+fn subheader(ui: &mut Ui, icon: MaterialIcon, label: &str) {
+    ui.label(
+        egui::RichText::new(icon_label(icon, label))
+            .strong()
+            .size(14.0)
+            .color(ui.visuals().weak_text_color()),
+    );
+}
+
+fn time_controls(ui: &mut Ui, params: &mut FlowParams) {
+    ui.label(
+        egui::RichText::new(icon_label(ICON_ANIMATION, "Time and animation"))
+            .size(16.0)
+            .strong(),
+    );
+    ui.separator();
+    ui.add_space(5.0);
+
+    subheader(ui, ICON_SCHEDULE, "time scale");
     ui.add(Slider::new(&mut params.time_scale, 0.0..=4.0).text("speed of time"))
         .on_hover_text(
-            "Runs the whole simulation faster or slower. It always ticks at a fixed rate.",
+            "Runs the whole simulation faster or slower, morphing included. It always ticks at a \
+             fixed rate.",
         );
+
+    ui.add_space(8.0);
+    ui.separator();
+    subheader(ui, ICON_WAVES, "field morphing");
+    ui.checkbox(&mut params.morph, "morph the field")
+        .on_hover_text("The noise slowly changes over time, so the flow drifts and reshapes.");
+    ui.add_enabled(
+        params.morph,
+        Slider::new(&mut params.morph_speed, 0.001..=2.0)
+            .logarithmic(true)
+            .text("rate of change"),
+    )
+    .on_hover_text(
+        "How quickly the field reshapes: noise units travelled per second. Together with the \
+         period, it sets how much changes over one loop.",
+    );
+    ui.add_enabled(
+        params.morph,
+        Slider::new(&mut params.morph_period_seconds, 1.0..=120.0)
+            .logarithmic(true)
+            .suffix(" s")
+            .text("loop period"),
+    )
+    .on_hover_text(
+        "Seconds until the field is back where it started, and the animation loops. The distance \
+         travelled in a loop is rounded to whole noise units for a seamless loop, so the real \
+         speed can differ slightly.",
+    );
 }
 
 fn spawn_controls(ui: &mut Ui, params: &mut FlowParams) {
@@ -625,7 +689,8 @@ fn range_slider(
                 ui.data_mut(|d| d.insert_temp(response.id, nearest_is_max));
                 nearest_is_max
             } else {
-                ui.data(|d| d.get_temp(response.id)).unwrap_or(nearest_is_max)
+                ui.data(|d| d.get_temp(response.id))
+                    .unwrap_or(nearest_is_max)
             };
 
             if response.dragged() || response.clicked() {

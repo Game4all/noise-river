@@ -325,6 +325,8 @@ pub struct FlowFieldSimulation {
     tick: u32,
     /// Fractional ticks owed to the clock.
     tick_debt: f32,
+    /// Where morphing is in its loop, 0..1.
+    morph_phase: f32,
     reset_pending: bool,
     export: export::Exporter,
 }
@@ -391,6 +393,7 @@ impl FlowFieldSimulation {
             surface_format,
             tick: 0,
             tick_debt: 0.0,
+            morph_phase: 0.0,
             reset_pending: true,
             export: export::Exporter::default(),
         })
@@ -578,10 +581,21 @@ impl FlowFieldSimulation {
         for _ in 0..ticks {
             self.tick = self.tick.wrapping_add(1);
 
+            let (field_z, period) = if self.params.morph {
+                self.morph_phase = self.params.advance_phase(self.morph_phase);
+                let units = self.params.morph_loop_units();
+                (self.morph_phase * units as f32, units)
+            } else {
+                (0.0, 0) // 0: the static 2D field
+            };
             pass.set_pipeline(&physics.pipeline);
             for (set, group) in self.sim.physics.sets() {
                 pass.set_bind_group(set, group, &[]);
             }
+            pass.set_immediates(
+                0,
+                bytemuck::cast_slice(&[field_z.to_bits(), period]),
+            );
             pass.dispatch_workgroups(groups(physics), 1, 1);
 
             pass.set_pipeline(&lifetime.pipeline);

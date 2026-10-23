@@ -71,6 +71,14 @@ pub struct FlowParams {
     /// Seeds the noise field and the particles' random numbers.
     pub noise_seed: u32,
 
+    // ---- morphing ----
+    /// The field drifts along a third noise axis over time.
+    pub morph: bool,
+    /// Rate of change: noise units per second along that axis.
+    pub morph_speed: f32,
+    /// Seconds until the field is back where it started, and loops.
+    pub morph_period_seconds: f32,
+
     // ---- rolled at spawn, only affect new particles ----
     /// Pixels per tick.
     pub speed: Range,
@@ -143,6 +151,10 @@ impl Default for FlowParams {
             turn_smoothing: 0.12,
             noise_seed: 42,
 
+            morph: false,
+            morph_speed: 0.1,
+            morph_period_seconds: 20.0,
+
             speed: Range::new(0.8, 3.2),
             point_size: Range::new(0.6, 2.5),
             // 200 to 500 ticks
@@ -194,6 +206,20 @@ impl FlowParams {
                 .max(0.0) as u32
         };
         by_time.clamp(2.min(capacity), capacity)
+    }
+
+    /// Whole noise units the morph axis covers in one loop, 1..=256. The loop is seamless only
+    /// over whole units, so this is `morph_speed * morph_period_seconds` rounded.
+    pub fn morph_loop_units(&self) -> u32 {
+        (self.morph_speed * self.morph_period_seconds)
+            .round()
+            .clamp(1.0, 256.0) as u32
+    }
+
+    /// The loop phase (0..1) one tick later.
+    pub fn advance_phase(&self, phase: f32) -> f32 {
+        let ticks = (self.morph_period_seconds * TICKS_PER_SECOND).max(1.0);
+        (phase + 1.0 / ticks).rem_euclid(1.0)
     }
 
     /// Writes the params to `path` as JSON.
@@ -455,6 +481,30 @@ mod tests {
     }
 
     #[test]
+    fn the_morph_loops_after_its_period() {
+        let params = FlowParams {
+            morph_speed: 0.5,
+            morph_period_seconds: 2.0,
+            ..FlowParams::default()
+        };
+        assert_eq!(params.morph_loop_units(), 1);
+        let mut phase = 0.0;
+        for _ in 0..119 {
+            phase = params.advance_phase(phase);
+        }
+        assert!(phase > 0.99);
+        phase = params.advance_phase(phase);
+        assert!(phase < 1e-3 || phase > 0.999, "back at the start: {phase}");
+
+        let huge = FlowParams {
+            morph_speed: 2.0,
+            morph_period_seconds: 600.0,
+            ..FlowParams::default()
+        };
+        assert_eq!(huge.morph_loop_units(), 256);
+    }
+
+    #[test]
     fn bias_angle_and_deviation() {
         let mut params = FlowParams::default(); // straight down
         assert!((params.bias_angle() - PI / 2.0).abs() < 1e-6);
@@ -564,11 +614,17 @@ mod tests {
         let mut params = FlowParams::default();
         params.noise_seed = 7;
         params.paused = true;
+        params.morph = true;
+        params.morph_speed = 0.5;
+        params.morph_period_seconds = 7.0;
         let back = save_and_load("round-trip", &params);
         assert_eq!(back.noise_seed, 7);
         assert_eq!(back.speed, params.speed);
         assert_eq!(back.palettes, params.palettes);
         assert!(!back.paused, "paused isn't saved");
+        assert!(back.morph);
+        assert_eq!(back.morph_speed, 0.5);
+        assert_eq!(back.morph_period_seconds, 7.0);
 
         let empty: FlowParams = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.noise_seed, FlowParams::default().noise_seed);
