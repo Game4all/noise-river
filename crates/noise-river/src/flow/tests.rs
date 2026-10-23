@@ -439,6 +439,21 @@ fn the_shader_noise_matches_the_pinned_values() {
     }
 }
 
+#[test]
+fn morphing_changes_where_particles_go() {
+    let run = |morph: bool| {
+        let mut h = Harness::new()?;
+        h.field.params.morph = morph;
+        h.field.params.morph_speed = 60.0; // one noise unit per tick
+        h.step(30);
+        Some(h.particles().iter().map(|p| p.pos).collect::<Vec<_>>())
+    };
+    let (Some(still), Some(morphing)) = (run(false), run(true)) else {
+        return;
+    };
+    assert_ne!(still, morphing);
+}
+
 // ---- what gets drawn ----
 
 #[test]

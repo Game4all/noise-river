@@ -22,6 +22,7 @@ use super::{
 pub(super) enum SettingsSection {
     Trails,
     Field,
+    Morph,
     Spawn,
     Look,
     Presets,
@@ -33,9 +34,10 @@ fn icon_label(icon: MaterialIcon, label: &str) -> String {
 }
 
 impl SettingsSection {
-    pub(super) const ALL: [SettingsSection; 5] = [
+    pub(super) const ALL: [SettingsSection; 6] = [
         SettingsSection::Trails,
         SettingsSection::Field,
+        SettingsSection::Morph,
         SettingsSection::Spawn,
         SettingsSection::Look,
         SettingsSection::Presets,
@@ -45,6 +47,7 @@ impl SettingsSection {
         match self {
             SettingsSection::Trails => icon_label(ICON_GRAIN, "particles and trails"),
             SettingsSection::Field => icon_label(ICON_AIR, "flow field"),
+            SettingsSection::Morph => icon_label(ICON_ANIMATION, "morphing"),
             SettingsSection::Spawn => icon_label(ICON_ADD_CIRCLE, "new particles"),
             SettingsSection::Look => icon_label(ICON_PALETTE, "look"),
             SettingsSection::Presets => icon_label(ICON_TUNE, "presets"),
@@ -331,6 +334,7 @@ fn section_controls(ui: &mut Ui, sim: &mut FlowFieldSimulation, section: Setting
     match section {
         SettingsSection::Trails => trail_controls(ui, sim),
         SettingsSection::Field => field_controls(ui, &mut sim.params),
+        SettingsSection::Morph => morph_controls(ui, &mut sim.params),
         SettingsSection::Spawn => spawn_controls(ui, &mut sim.params),
         SettingsSection::Look => look_controls(ui, &mut sim.params),
         SettingsSection::Presets => unreachable!("drawn by `section_window`"),
@@ -517,6 +521,33 @@ fn field_controls(ui: &mut Ui, params: &mut FlowParams) {
         .on_hover_text(
             "Runs the whole simulation faster or slower. It always ticks at a fixed rate.",
         );
+}
+
+fn morph_controls(ui: &mut Ui, params: &mut FlowParams) {
+    ui.checkbox(&mut params.morph, "morph the field")
+        .on_hover_text("The noise slowly changes over time, so the flow drifts and reshapes.");
+    ui.add_enabled(
+        params.morph,
+        Slider::new(&mut params.morph_speed, 0.001..=2.0)
+            .logarithmic(true)
+            .text("animation speed"),
+    )
+    .on_hover_text(
+        "How far the field travels through the noise. With the period, it sets how much changes \
+         over one loop. It follows \"speed of time\" and stops while paused.",
+    );
+    ui.add_enabled(
+        params.morph,
+        Slider::new(&mut params.morph_period_seconds, 1.0..=120.0)
+            .logarithmic(true)
+            .suffix(" s")
+            .text("loop period"),
+    )
+    .on_hover_text(
+        "Seconds until the field is back where it started, and the animation loops. The distance \
+         travelled in a loop is rounded to whole noise units for a seamless loop, so the real \
+         speed can differ slightly.",
+    );
 }
 
 fn spawn_controls(ui: &mut Ui, params: &mut FlowParams) {

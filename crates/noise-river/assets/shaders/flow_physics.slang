@@ -10,6 +10,13 @@ import perlin;
 [PipelineGlobalResource("perm")] StructuredBuffer<uint> perm;
 [PipelineGlobalResource("particles")] RWStructuredBuffer<Particle> particles;
 
+struct Push
+{
+    float fieldZ;  // position along the morphing axis, 0..period
+    uint period;   // loop length in noise units, 0: static 2D field
+};
+[[vk::push_constant]] ConstantBuffer<Push> push;
+
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void csPhysics(uint3 id : SV_DispatchThreadID)
@@ -25,8 +32,19 @@ void csPhysics(uint3 id : SV_DispatchThreadID)
 
     // two octaves: the detail layer keeps the target wobbling where the base is flat
     float2 samplePos = p.pos * params.noiseScale;
-    float nBase = perlin2D(perm, samplePos);
-    float nDetail = perlin2D(perm, samplePos * params.detailScale + 1000.0);
+    float2 detailPos = samplePos * params.detailScale + 1000.0;
+    float nBase;
+    float nDetail;
+    if (push.period != 0u)
+    {
+        nBase = perlin3D(perm, float3(samplePos, push.fieldZ), push.period);
+        nDetail = perlin3D(perm, float3(detailPos, push.fieldZ + 100.0), push.period);
+    }
+    else
+    {
+        nBase = perlin2D(perm, samplePos);
+        nDetail = perlin2D(perm, detailPos);
+    }
     float n = nBase * (1.0 - params.detailWeight) + nDetail * params.detailWeight;
 
     float targetAngle = params.biasAngle + n * params.maxDeviation;
