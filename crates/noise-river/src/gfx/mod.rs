@@ -4,6 +4,7 @@ mod convert;
 mod egui;
 mod error;
 mod pipeline;
+mod gui_theme;
 
 #[allow(unused_imports)]
 pub use error::PipelineError;

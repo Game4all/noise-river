@@ -15,6 +15,7 @@ impl EguiContext {
     pub fn new(window: &Window, gfx: &GfxContext) -> Self {
         let ctx = egui::Context::default();
         initialize_material_icons(&ctx);
+        super::gui_theme::apply_theme(&ctx);
 
         let state = egui_winit::State::new(
             ctx.clone(),
