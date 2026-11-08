@@ -1,6 +1,5 @@
 //! Visual style for egui components that is more flat and square
 
-
 use egui::{Color32, CornerRadius, Shadow, Stroke, Theme, Vec2, Visuals};
 
 ///

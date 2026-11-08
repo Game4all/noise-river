@@ -134,7 +134,10 @@ impl FlowFieldSimulationUIState {
         }
         let saving = sim.export.is_saving();
         if ui
-            .add_enabled(!saving, egui::Button::new(icon_label(ICON_DOWNLOAD, "save image")))
+            .add_enabled(
+                !saving,
+                egui::Button::new(icon_label(ICON_DOWNLOAD, "save image")),
+            )
             .on_hover_text(
                 "Saves the image as a PNG in the working directory, at the resolution of the \
                  image.",
@@ -154,12 +157,13 @@ impl FlowFieldSimulationUIState {
         );
         // the controls are edited in place, so only a click outside closes the popover
         let config = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
-        let (response, _) = MenuButton::new(icon_label(ICON_IMAGE, &format!("{width}×{height} px")))
-            .config(config)
-            .ui(ui, |ui| {
-                ui.set_min_width(300.0);
-                self.image_controls(ui, sim);
-            });
+        let (response, _) =
+            MenuButton::new(icon_label(ICON_IMAGE, &format!("{width}×{height} px")))
+                .config(config)
+                .ui(ui, |ui| {
+                    ui.set_min_width(300.0);
+                    self.image_controls(ui, sim);
+                });
         response.on_hover_text(hover);
         ui.label(format!("{:.0} fps", sim.stats.fps));
 

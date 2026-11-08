@@ -3,18 +3,18 @@ use std::sync::Arc;
 mod convert;
 mod egui;
 mod error;
-mod pipeline;
 mod gui_theme;
+mod pipeline;
 
+pub use self::egui::EguiContext;
 #[allow(unused_imports)]
 pub use error::PipelineError;
 pub use pipeline::*;
-pub use self::egui::EguiContext;
 
 use wgpu::InstanceFlags;
 use winit::window::Window;
 
-/// App shaders embedded into the binary. 
+/// App shaders embedded into the binary.
 /// All shaders + reflection data written to $OUT_DIR/shaders end up in here.
 #[derive(rust_embed::Embed)]
 #[folder = "$OUT_DIR/shaders"]

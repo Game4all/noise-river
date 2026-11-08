@@ -592,10 +592,7 @@ impl FlowFieldSimulation {
             for (set, group) in self.sim.physics.sets() {
                 pass.set_bind_group(set, group, &[]);
             }
-            pass.set_immediates(
-                0,
-                bytemuck::cast_slice(&[field_z.to_bits(), period]),
-            );
+            pass.set_immediates(0, bytemuck::cast_slice(&[field_z.to_bits(), period]));
             pass.dispatch_workgroups(groups(physics), 1, 1);
 
             pass.set_pipeline(&lifetime.pipeline);
