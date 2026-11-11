@@ -2,7 +2,6 @@
 
 use egui::{Color32, CornerRadius, Shadow, Stroke, Theme, Vec2, Visuals};
 
-///
 const ACCENT: Color32 = Color32::from_rgb(0x63, 0x66, 0xF1);
 
 pub fn apply_theme(ctx: &egui::Context) {

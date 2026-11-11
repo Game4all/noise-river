@@ -368,31 +368,29 @@ fn preset_controls(ui: &mut Ui, sim: &mut FlowFieldSimulation, status: &mut Opti
             .button(icon_label(ICON_SAVE, "save preset…"))
             .on_hover_text("Saves the settings to a JSON file.")
             .clicked()
+            && let Some(path) = pick_save_path()
         {
-            if let Some(path) = pick_save_path() {
-                *status = Some(match sim.params.save_preset(&path) {
-                    Ok(()) => format!("saved to {}", path.display()),
-                    Err(error) => format!("couldn't save: {error}"),
-                });
-            }
+            *status = Some(match sim.params.save_preset(&path) {
+                Ok(()) => format!("saved to {}", path.display()),
+                Err(error) => format!("couldn't save: {error}"),
+            });
         }
 
         if ui
             .button(icon_label(ICON_FOLDER_OPEN, "load preset…"))
             .on_hover_text("Loads a preset from a JSON file")
             .clicked()
+            && let Some(path) = pick_load_path()
         {
-            if let Some(path) = pick_load_path() {
-                *status = Some(match FlowParams::load_preset(&path) {
-                    Ok(mut params) => {
-                        params.paused = sim.params.paused;
-                        sim.params = params;
-                        sim.request_reset();
-                        format!("loaded {}", path.display())
-                    }
-                    Err(error) => format!("couldn't load: {error}"),
-                });
-            }
+            *status = Some(match FlowParams::load_preset(&path) {
+                Ok(mut params) => {
+                    params.paused = sim.params.paused;
+                    sim.params = params;
+                    sim.request_reset();
+                    format!("loaded {}", path.display())
+                }
+                Err(error) => format!("couldn't load: {error}"),
+            });
         }
     });
 

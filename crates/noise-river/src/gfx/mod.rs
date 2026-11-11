@@ -67,7 +67,7 @@ impl GfxContext {
 
         let adapter_limits = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: required_features,
+            required_features,
             required_limits: wgpu::Limits {
                 max_immediate_size: adapter_limits.max_immediate_size.min(128),
                 // the 128 MiB default is too small for a big trail history
