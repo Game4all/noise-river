@@ -1,17 +1,55 @@
 //! Tunable flow field parameters, and their GPU mirrors. [`GpuParams`] and [`Particle`] match
-//! `SimParams` and `Particle` in `assets/shaders/lib/particles.slang` byte for byte. The layout
-//! tests at the bottom pin the sizes and offsets.
+//! `SimParams` and `Particle` in `assets/shaders/lib/particles.slang` byte for byte. They derive
+//! [`ShaderType`], so encase adds the std140/std430 padding. The layout tests at the bottom pin
+//! the sizes and offsets.
 
 use std::error::Error;
 use std::f32::consts::PI;
 use std::fs;
 use std::path::Path;
 
-use bytemuck::{Pod, Zeroable};
+use encase::ShaderType;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_PALETTES: usize = 16;
 pub const MAX_PALETTE_STOPS: usize = 64;
+
+/// A shader vector of `N` scalars.
+/// This is specifically for encase.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShaderVec<T, const N: usize>(pub [T; N]);
+
+impl<T: Default + Copy, const N: usize> Default for ShaderVec<T, N> {
+    fn default() -> Self {
+        Self([T::default(); N])
+    }
+}
+
+impl<T, const N: usize> From<[T; N]> for ShaderVec<T, N> {
+    fn from(parts: [T; N]) -> Self {
+        Self(parts)
+    }
+}
+
+impl<T, const N: usize> AsRef<[T; N]> for ShaderVec<T, N> {
+    fn as_ref(&self) -> &[T; N] {
+        &self.0
+    }
+}
+
+impl<T, const N: usize> AsMut<[T; N]> for ShaderVec<T, N> {
+    fn as_mut(&mut self) -> &mut [T; N] {
+        &mut self.0
+    }
+}
+
+encase::impl_vector!(2, ShaderVec<f32, 2>, f32; using AsRef AsMut From);
+encase::impl_vector!(4, ShaderVec<f32, 4>, f32; using AsRef AsMut From);
+encase::impl_vector!(4, ShaderVec<u32, 4>, u32; using AsRef AsMut From);
+
+pub type ShaderVec2 = ShaderVec<f32, 2>;
+pub type ShaderVec4 = ShaderVec<f32, 4>;
+pub type ShaderUVec4 = ShaderVec<u32, 4>;
 
 /// Fixed simulation rate. Per-frame values (speed, trail points) are per tick at 60 fps.
 pub const TICKS_PER_SECOND: f32 = 60.0;
@@ -254,35 +292,40 @@ impl FlowParams {
         pixel_scale: f32,
         particle_count: u32,
         capacity: u32,
-    ) -> GpuParams {
-        let mut gpu = GpuParams::zeroed();
-        gpu.sim_size = sim_size;
-        gpu.pixel_scale = pixel_scale;
-        gpu.particle_count = particle_count;
+    ) -> FlowGpuParams {
+        let mut gpu = FlowGpuParams {
+            sim_size: sim_size.into(),
+            pixel_scale,
+            particle_count,
 
-        gpu.noise_scale = self.noise_scale;
-        gpu.detail_scale = self.detail_scale;
-        gpu.detail_weight = self.detail_weight;
-        gpu.turn_smoothing = self.turn_smoothing;
+            noise_scale: self.noise_scale,
+            detail_scale: self.detail_scale,
+            detail_weight: self.detail_weight,
+            turn_smoothing: self.turn_smoothing,
 
-        gpu.bias_angle = self.bias_angle();
-        gpu.max_deviation = self.max_deviation();
-        gpu.max_travel = self.max_travel_distance * sim_size[0].min(sim_size[1]);
-        gpu.stroke_alpha = self.stroke_alpha;
+            bias_angle: self.bias_angle(),
+            max_deviation: self.max_deviation(),
+            max_travel: self.max_travel_distance * sim_size[0].min(sim_size[1]),
+            stroke_alpha: self.stroke_alpha,
 
-        gpu.speed_min = self.speed.min;
-        gpu.speed_max = self.speed.max;
-        gpu.size_min = self.point_size.min;
-        gpu.size_max = self.point_size.max;
+            speed_min: self.speed.min,
+            speed_max: self.speed.max,
+            size_min: self.point_size.min,
+            size_max: self.point_size.max,
 
-        gpu.life_min = self.life_seconds.min * TICKS_PER_SECOND;
-        gpu.life_max = self.life_seconds.max * TICKS_PER_SECOND;
-        gpu.fade_start_ticks = self.trail_fade_start_seconds * TICKS_PER_SECOND;
-        gpu.death_fade_ticks = self.death_fade_seconds * TICKS_PER_SECOND;
+            life_min: self.life_seconds.min * TICKS_PER_SECOND,
+            life_max: self.life_seconds.max * TICKS_PER_SECOND,
+            fade_start_ticks: self.trail_fade_start_seconds * TICKS_PER_SECOND,
+            death_fade_ticks: self.death_fade_seconds * TICKS_PER_SECOND,
 
-        gpu.trail_capacity = capacity;
-        gpu.trail_window = self.trail_window(capacity);
-        gpu.seed = self.noise_seed;
+            trail_capacity: capacity,
+            trail_window: self.trail_window(capacity),
+            palette_count: 0,
+            seed: self.noise_seed,
+
+            palettes: [ShaderUVec4::default(); MAX_PALETTES],
+            palette_stops: [ShaderVec4::default(); MAX_PALETTE_STOPS],
+        };
 
         // Palettes are packed back to back in one stop array. The UI keeps within the limits,
         // so this only guards.
@@ -293,18 +336,18 @@ impl FlowParams {
             if count < 2 {
                 continue;
             }
-            gpu.palettes[palettes] = [stops as u32, count as u32, 0, 0];
+            gpu.palettes[palettes] = [stops as u32, count as u32, 0, 0].into();
             for &[r, g, b] in &palette.stops[..count] {
-                gpu.palette_stops[stops] = [srgb(r), srgb(g), srgb(b), 1.0];
+                gpu.palette_stops[stops] = [srgb(r), srgb(g), srgb(b), 1.0].into();
                 stops += 1;
             }
             palettes += 1;
         }
         if palettes == 0 {
             // spawning needs something to pick from
-            gpu.palettes[0] = [0, 2, 0, 0];
-            gpu.palette_stops[0] = [0.5, 0.5, 0.5, 1.0];
-            gpu.palette_stops[1] = [0.9, 0.9, 0.9, 1.0];
+            gpu.palettes[0] = [0, 2, 0, 0].into();
+            gpu.palette_stops[0] = [0.5, 0.5, 0.5, 1.0].into();
+            gpu.palette_stops[1] = [0.9, 0.9, 0.9, 1.0].into();
             palettes = 1;
         }
         gpu.palette_count = palettes as u32;
@@ -380,10 +423,9 @@ fn srgb(channel: u8) -> f32 {
 }
 
 /// `SimParams`, the uniform of every pass. std140.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct GpuParams {
-    pub sim_size: [f32; 2],
+#[derive(Debug, Clone, Copy, ShaderType)]
+pub struct FlowGpuParams {
+    pub sim_size: ShaderVec2,
     pub pixel_scale: f32,
     pub particle_count: u32,
 
@@ -413,15 +455,14 @@ pub struct GpuParams {
     pub seed: u32,
 
     /// First stop and stop count of every palette.
-    pub palettes: [[u32; 4]; MAX_PALETTES],
-    pub palette_stops: [[f32; 4]; MAX_PALETTE_STOPS],
+    pub palettes: [ShaderUVec4; MAX_PALETTES],
+    pub palette_stops: [ShaderVec4; MAX_PALETTE_STOPS],
 }
 
 /// `Particle`, as it is in the particle buffer. std430, 64 bytes.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, ShaderType)]
 pub struct Particle {
-    pub pos: [f32; 2],
+    pub pos: ShaderVec2,
     pub angle: f32,
     pub speed: f32,
     pub size: f32,
@@ -448,36 +489,74 @@ impl Particle {
 
 #[cfg(test)]
 mod tests {
-    use std::mem::{offset_of, size_of};
+    use encase::{ShaderSize, StorageBuffer, UniformBuffer};
 
     use super::*;
 
-    // Offsets as slangc reflects them for the flow passes.
+    /// The u32 words of `value`, laid out the way the buffer would hold it.
+    fn words(bytes: Vec<u8>) -> Vec<u32> {
+        bytes
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+            .collect()
+    }
+
+    // Offsets as slangc reflects them for the flow passes. Each field under test holds its own
+    // offset, so a field that landed elsewhere shows.
     #[test]
     fn gpu_params_has_the_std140_layout_of_sim_params() {
-        assert_eq!(size_of::<GpuParams>(), 1376);
-        assert_eq!(offset_of!(GpuParams, pixel_scale), 8);
-        assert_eq!(offset_of!(GpuParams, particle_count), 12);
-        assert_eq!(offset_of!(GpuParams, noise_scale), 16);
-        assert_eq!(offset_of!(GpuParams, bias_angle), 32);
-        assert_eq!(offset_of!(GpuParams, speed_min), 48);
-        assert_eq!(offset_of!(GpuParams, life_min), 64);
-        assert_eq!(offset_of!(GpuParams, death_fade_ticks), 76);
-        assert_eq!(offset_of!(GpuParams, trail_capacity), 80);
-        assert_eq!(offset_of!(GpuParams, seed), 92);
-        assert_eq!(offset_of!(GpuParams, palettes), 96);
-        assert_eq!(offset_of!(GpuParams, palette_stops), 352);
+        assert_eq!(FlowGpuParams::SHADER_SIZE.get(), 1376);
+
+        let mut gpu = FlowParams::default().to_gpu([0.0; 2], 0.0, 0, 0);
+        gpu.pixel_scale = f32::from_bits(8);
+        gpu.particle_count = 12;
+        gpu.noise_scale = f32::from_bits(16);
+        gpu.bias_angle = f32::from_bits(32);
+        gpu.speed_min = f32::from_bits(48);
+        gpu.life_min = f32::from_bits(64);
+        gpu.death_fade_ticks = f32::from_bits(76);
+        gpu.trail_capacity = 80;
+        gpu.seed = 92;
+        gpu.palettes[0] = [96, 0, 0, 0].into();
+        gpu.palette_stops[0] = [f32::from_bits(352), 0.0, 0.0, 0.0].into();
+
+        let mut buffer = UniformBuffer::new(Vec::<u8>::new());
+        buffer.write(&gpu).unwrap();
+        let words = words(buffer.into_inner());
+        assert_eq!(words.len() * 4, 1376);
+        for offset in [8, 12, 16, 32, 48, 64, 76, 80, 92, 96, 352] {
+            assert_eq!(words[offset / 4], offset as u32, "offset {offset}");
+        }
     }
 
     #[test]
     fn particle_has_the_std430_layout_of_the_shader_struct() {
-        assert_eq!(size_of::<Particle>(), 64);
-        assert_eq!(offset_of!(Particle, angle), 8);
-        assert_eq!(offset_of!(Particle, alpha), 32);
-        assert_eq!(offset_of!(Particle, dying_ticks), 40);
-        assert_eq!(offset_of!(Particle, color), 44);
-        assert_eq!(offset_of!(Particle, trail_head), 52);
-        assert_eq!(offset_of!(Particle, pad), 60);
+        assert_eq!(Particle::SHADER_SIZE.get(), 64);
+
+        let particle = Particle {
+            pos: [0.0; 2].into(),
+            angle: f32::from_bits(8),
+            speed: 0.0,
+            size: 0.0,
+            age: 0.0,
+            life: 0.0,
+            traveled: 0.0,
+            alpha: f32::from_bits(32),
+            dying_alpha_start: 0.0,
+            dying_ticks: f32::from_bits(40),
+            color: 44,
+            flags: 0,
+            trail_head: 52,
+            trail_len: 0,
+            pad: 60,
+        };
+        let mut buffer = StorageBuffer::new(Vec::<u8>::new());
+        buffer.write(&particle).unwrap();
+        let words = words(buffer.into_inner());
+        assert_eq!(words.len() * 4, 64);
+        for offset in [8, 32, 40, 44, 52, 60] {
+            assert_eq!(words[offset / 4], offset as u32, "offset {offset}");
+        }
     }
 
     #[test]
@@ -557,10 +636,13 @@ mod tests {
         let gpu = params.to_gpu([800.0, 600.0], 2.0, 500, 900);
 
         assert_eq!(gpu.palette_count, 4);
-        assert_eq!(gpu.palettes[0], [0, 4, 0, 0]);
-        assert_eq!(gpu.palettes[3], [12, 4, 0, 0]);
+        assert_eq!(gpu.palettes[0], [0, 4, 0, 0].into());
+        assert_eq!(gpu.palettes[3], [12, 4, 0, 0].into());
         // ember starts at #3a0d00
-        assert_eq!(gpu.palette_stops[0], [58.0 / 255.0, 13.0 / 255.0, 0.0, 1.0]);
+        assert_eq!(
+            gpu.palette_stops[0],
+            [58.0 / 255.0, 13.0 / 255.0, 0.0, 1.0].into()
+        );
         assert_eq!(gpu.trail_window, 240);
         assert_eq!(gpu.fade_start_ticks, 180.0);
         assert_eq!(gpu.max_travel, 0.7 * 600.0);
@@ -683,7 +765,7 @@ mod tests {
         };
         let gpu = params.to_gpu([100.0, 100.0], 1.0, 1, 10);
         assert_eq!(gpu.palette_count, 1);
-        assert_eq!(gpu.palettes[0], [0, MAX_PALETTE_STOPS as u32, 0, 0]);
+        assert_eq!(gpu.palettes[0], [0, MAX_PALETTE_STOPS as u32, 0, 0].into());
 
         params.palettes.clear();
         let gpu = params.to_gpu([100.0, 100.0], 1.0, 1, 10);

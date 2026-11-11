@@ -21,6 +21,7 @@ spirv = "0.4"
 thiserror = "2"
 build-rs = "0.3"
 bytemuck = { version = "1", features = ["derive"] }
+encase = "0.13"
 png = "0.18"
 rfd = "0.17"
 rust-embed = { version = "8.13", features = ["interpolate-folder-path", "debug-embed"] }

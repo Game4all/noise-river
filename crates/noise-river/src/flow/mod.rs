@@ -47,7 +47,7 @@ const MAX_TICKS_PER_FRAME: u32 = 8;
 const MAX_HISTORY_BYTES: u64 = 1 << 30;
 const MAX_PARTICLES: u32 = 4_000_000;
 
-const PARTICLE_BYTES: u64 = std::mem::size_of::<Particle>() as u64;
+const PARTICLE_BYTES: u64 = <Particle as encase::ShaderSize>::SHADER_SIZE.get();
 const TRAIL_POINT_BYTES: u64 = 4;
 
 /// How the simulation is doing, for the UI.
@@ -347,7 +347,7 @@ impl FlowFieldSimulation {
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("flow params"),
-            size: std::mem::size_of::<GpuParams>() as u64,
+            size: <FlowGpuParams as encase::ShaderSize>::SHADER_SIZE.get(),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -494,7 +494,11 @@ impl FlowFieldSimulation {
             self.sim.count,
             self.sim.capacity,
         );
-        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&gpu_params));
+        let mut params_bytes = encase::UniformBuffer::new(Vec::<u8>::new());
+        params_bytes
+            .write(&gpu_params)
+            .expect("a Vec grows to fit the params");
+        queue.write_buffer(&self.params_buffer, 0, params_bytes.as_ref());
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("flow encoder"),

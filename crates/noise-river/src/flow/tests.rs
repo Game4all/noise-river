@@ -89,12 +89,13 @@ impl Harness {
     }
 
     fn particles(&self) -> Vec<Particle> {
-        read_buffer(
+        let bytes = read_bytes(
             &self.device,
             &self.queue,
             &self.field.sim.particles,
-            self.field.sim.count as usize,
-        )
+            u64::from(self.field.sim.count) * PARTICLE_BYTES,
+        );
+        encase::StorageBuffer::new(bytes).create().unwrap()
     }
 
     /// The surface, read back as rgba8. Its format is whatever the harness made it.
@@ -123,6 +124,15 @@ fn read_buffer<T: bytemuck::Pod>(
     len: usize,
 ) -> Vec<T> {
     let size = (len * std::mem::size_of::<T>()) as u64;
+    bytemuck::pod_collect_to_vec(&read_bytes(device, queue, buffer, size))
+}
+
+fn read_bytes(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    size: u64,
+) -> Vec<u8> {
     let staging = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("test readback"),
         size,
@@ -135,7 +145,7 @@ fn read_buffer<T: bytemuck::Pod>(
 
     staging.map_async(wgpu::MapMode::Read, .., |result| result.unwrap());
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    let out = bytemuck::pod_collect_to_vec(&staging.get_mapped_range(..).unwrap());
+    let out = staging.get_mapped_range(..).unwrap().to_vec();
     staging.unmap();
     out
 }
@@ -204,7 +214,7 @@ fn particles_keep_their_invariants_through_their_whole_lifecycle() {
 
         for (i, p) in particles.iter().enumerate() {
             let context = format!("particle {i}: {p:?}");
-            assert!(p.pos.iter().all(|c| c.is_finite()), "{context}");
+            assert!(p.pos.0.iter().all(|c| c.is_finite()), "{context}");
             assert!((0.0..=1.0).contains(&p.alpha), "{context}");
             assert_eq!(p.flags, 0, "the trails pass clears the flags: {context}");
             assert!(p.trail_len >= 1 && p.trail_len <= capacity, "{context}");
@@ -221,8 +231,8 @@ fn particles_keep_their_invariants_through_their_whole_lifecycle() {
                 assert!((p.alpha - expected).abs() < 1e-4, "{context}");
             } else {
                 // deaths are decided in the same tick as the move
-                assert!(p.pos[0] >= 0.0 && p.pos[0] <= width, "{context}");
-                assert!(p.pos[1] >= 0.0 && p.pos[1] <= height, "{context}");
+                assert!(p.pos.0[0] >= 0.0 && p.pos.0[0] <= width, "{context}");
+                assert!(p.pos.0[1] >= 0.0 && p.pos.0[1] <= height, "{context}");
                 assert!(p.age < p.life, "{context}");
                 assert!(p.traveled <= 0.7 * height + 1e-3, "{context}");
                 // opaque until the 3 s fade start, then linear to the end of life
@@ -282,18 +292,18 @@ fn a_reset_gives_every_particle_a_trail_at_its_spawn_point() {
             (packed >> 16) as f32 / 65535.0 * (sim_size[1] + 32.0) - 16.0,
         ];
         assert!(
-            (unpacked[0] - p.pos[0]).abs() < 0.02,
+            (unpacked[0] - p.pos.0[0]).abs() < 0.02,
             "particle {i}: {unpacked:?} {p:?}"
         );
         assert!(
-            (unpacked[1] - p.pos[1]).abs() < 0.02,
+            (unpacked[1] - p.pos.0[1]).abs() < 0.02,
             "particle {i}: {unpacked:?} {p:?}"
         );
     }
 
     // and the spawn spread over the whole area, not one corner
-    let mean_x = particles.iter().map(|p| p.pos[0]).sum::<f32>() / particles.len() as f32;
-    let mean_y = particles.iter().map(|p| p.pos[1]).sum::<f32>() / particles.len() as f32;
+    let mean_x = particles.iter().map(|p| p.pos.0[0]).sum::<f32>() / particles.len() as f32;
+    let mean_y = particles.iter().map(|p| p.pos.0[1]).sum::<f32>() / particles.len() as f32;
     assert!((mean_x - 250.0).abs() < 40.0, "{mean_x}");
     assert!((mean_y - 150.0).abs() < 30.0, "{mean_y}");
 }
