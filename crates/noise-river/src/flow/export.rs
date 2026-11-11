@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::EXPORT_FORMAT;
+use super::{CompositePush, EXPORT_FORMAT};
 use crate::gfx::{PipelineBindGroups, RenderPipeline};
 
 type Outcome = Result<PathBuf, String>;
@@ -133,7 +133,11 @@ pub(super) fn capture(
             pass.set_bind_group(set, group, &[]);
         }
         // the target isn't sRGB, and the image is copied 1:1, so no decode and no filter
-        pass.set_immediates(0, bytemuck::cast_slice(&[0u32, 0u32]));
+        let push = CompositePush {
+            decode_srgb: 0,
+            smooth_filter: 0,
+        };
+        pass.set_immediates(0, &push.as_immediate_bytes());
         pass.draw(0..3, 0..1);
     }
     queue.submit([encoder.finish()]);

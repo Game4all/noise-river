@@ -347,7 +347,7 @@ impl FlowFieldSimulation {
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("flow params"),
-            size: <FlowGpuParams as encase::ShaderSize>::SHADER_SIZE.get(),
+            size: FlowGpuParams::BYTES_LEN as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -494,11 +494,7 @@ impl FlowFieldSimulation {
             self.sim.count,
             self.sim.capacity,
         );
-        let mut params_bytes = encase::UniformBuffer::new(Vec::<u8>::new());
-        params_bytes
-            .write(&gpu_params)
-            .expect("a Vec grows to fit the params");
-        queue.write_buffer(&self.params_buffer, 0, params_bytes.as_ref());
+        queue.write_buffer(&self.params_buffer, 0, &gpu_params.as_uniform_bytes());
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("flow encoder"),
@@ -571,7 +567,7 @@ impl FlowFieldSimulation {
             for (set, group) in self.sim.spawn.sets() {
                 pass.set_bind_group(set, group, &[]);
             }
-            pass.set_immediates(0, &self.tick.to_le_bytes());
+            pass.set_immediates(0, &LifetimePush { tick: self.tick }.as_immediate_bytes());
             pass.dispatch_workgroups(groups(spawn), 1, 1);
 
             // records spawn points: every particle needs a trail to start from
@@ -596,14 +592,14 @@ impl FlowFieldSimulation {
             for (set, group) in self.sim.physics.sets() {
                 pass.set_bind_group(set, group, &[]);
             }
-            pass.set_immediates(0, bytemuck::cast_slice(&[field_z.to_bits(), period]));
+            pass.set_immediates(0, &PhysicsPush { field_z, period }.as_immediate_bytes());
             pass.dispatch_workgroups(groups(physics), 1, 1);
 
             pass.set_pipeline(&lifetime.pipeline);
             for (set, group) in self.sim.lifetime.sets() {
                 pass.set_bind_group(set, group, &[]);
             }
-            pass.set_immediates(0, &self.tick.to_le_bytes());
+            pass.set_immediates(0, &LifetimePush { tick: self.tick }.as_immediate_bytes());
             pass.dispatch_workgroups(groups(lifetime), 1, 1);
 
             pass.set_pipeline(&trails.pipeline);
@@ -667,9 +663,11 @@ impl FlowFieldSimulation {
             pass.set_bind_group(set, group, &[]);
         }
         // sRGB surfaces encode on write, so the composite decodes first
-        let decode = u32::from(self.surface_format.is_srgb());
-        let smooth = u32::from(self.image.filter == ScaleFilter::Smooth);
-        pass.set_immediates(0, bytemuck::cast_slice(&[decode, smooth]));
+        let push = CompositePush {
+            decode_srgb: u32::from(self.surface_format.is_srgb()),
+            smooth_filter: u32::from(self.image.filter == ScaleFilter::Smooth),
+        };
+        pass.set_immediates(0, &push.as_immediate_bytes());
         pass.draw(0..3, 0..1);
     }
 }

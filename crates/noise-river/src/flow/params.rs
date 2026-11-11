@@ -8,7 +8,7 @@ use std::f32::consts::PI;
 use std::fs;
 use std::path::Path;
 
-use encase::ShaderType;
+use encase::{ShaderSize, ShaderType, StorageBuffer, UniformBuffer};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_PALETTES: usize = 16;
@@ -480,6 +480,59 @@ pub struct Particle {
     pub pad: u32,
 }
 
+impl FlowGpuParams {
+    pub const BYTES_LEN: usize = <Self as ShaderSize>::SHADER_SIZE.get() as usize;
+
+    /// Returns the struct as an array of bytes in std140 format.
+    pub fn as_uniform_bytes(&self) -> [u8; Self::BYTES_LEN] {
+        let mut buffer = UniformBuffer::new([0u8; Self::BYTES_LEN]);
+        buffer
+            .write(self)
+            .expect("array should be the params' size");
+        buffer.into_inner()
+    }
+}
+
+/// A small proc-macro to give a push constants struct its size and its bytes in std430 format,
+/// which `set_immediates` takes.
+macro_rules! impl_push_bytes {
+    ($push:ident) => {
+        impl $push {
+            pub const BYTES: usize = <Self as ShaderSize>::SHADER_SIZE.get() as usize;
+
+            pub fn as_immediate_bytes(&self) -> [u8; Self::BYTES] {
+                StorageBuffer::<[u8; Self::BYTES]>::content_of(self)
+                    .expect("array should be the push constant's size")
+            }
+        }
+    };
+}
+
+/// Push constants of `flow_physics.slang`.
+#[derive(Debug, Clone, Copy, ShaderType)]
+pub struct PhysicsPush {
+    /// Position along the morphing axis, 0..period.
+    pub field_z: f32,
+    /// Loop length in noise units, 0 for the static 2D field.
+    pub period: u32,
+}
+impl_push_bytes!(PhysicsPush);
+
+/// Push constants of `flow_lifetime.slang`.
+#[derive(Debug, Clone, Copy, ShaderType)]
+pub struct LifetimePush {
+    pub tick: u32,
+}
+impl_push_bytes!(LifetimePush);
+
+/// Push constants of `flow_composite.slang`. The flags are 0 or 1.
+#[derive(Debug, Clone, Copy, ShaderType)]
+pub struct CompositePush {
+    pub decode_srgb: u32,
+    pub smooth_filter: u32,
+}
+impl_push_bytes!(CompositePush);
+
 #[cfg(test)]
 impl Particle {
     pub fn is_dying(&self) -> bool {
@@ -489,16 +542,13 @@ impl Particle {
 
 #[cfg(test)]
 mod tests {
-    use encase::{ShaderSize, StorageBuffer, UniformBuffer};
-
     use super::*;
 
-    /// The u32 words of `value`, laid out the way the buffer would hold it.
+    /// `bytes` as little-endian u32 words.
     fn words(bytes: Vec<u8>) -> Vec<u32> {
-        bytes
-            .chunks_exact(4)
-            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
-            .collect()
+        let (words, rest) = bytes.as_chunks::<4>();
+        assert!(rest.is_empty());
+        words.iter().copied().map(u32::from_le_bytes).collect()
     }
 
     // Offsets as slangc reflects them for the flow passes. Each field under test holds its own
