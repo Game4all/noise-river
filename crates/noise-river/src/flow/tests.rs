@@ -110,7 +110,7 @@ impl Harness {
             &self.queue,
             self.manager
                 .render_pipeline(self.field.ids.composite_export),
-            &self.field.target.composite_export,
+            &self.field.target.front_texture().composite_export,
             self.field.target.size,
         )
         .unwrap()
@@ -480,6 +480,36 @@ fn a_field_that_has_not_moved_is_the_plain_background() {
     for texel in texels(&image) {
         assert_eq!(*texel, [BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 255]);
     }
+}
+
+#[test]
+fn each_draw_swaps_the_trail_buffers() {
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    assert_eq!(harness.field.target.front, RenderTexturesCurrentTexture::A);
+    harness.step(1);
+    assert_eq!(harness.field.target.front, RenderTexturesCurrentTexture::B);
+    harness.step(1);
+    assert_eq!(harness.field.target.front, RenderTexturesCurrentTexture::A);
+}
+
+#[test]
+fn a_paused_field_is_not_redrawn() {
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    harness.step(60);
+    harness.field.params.paused = true;
+    harness.step(1);
+    let front = harness.field.target.front;
+    let before = harness.image();
+
+    // a new background would show if anything were drawn
+    harness.field.params.background = [255, 0, 255];
+    harness.step(3);
+    assert_eq!(harness.field.target.front, front);
+    assert!(harness.image() == before, "the paused image changed");
 }
 
 #[test]

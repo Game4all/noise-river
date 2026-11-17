@@ -6,12 +6,16 @@
 //! | physics   | `flow_physics`  | compute, per tick | steers particles along the noise field and moves them |
 //! | lifetime  | `flow_lifetime` | compute, per tick | ages them, fades them, kills and respawns them   |
 //! | trails    | `flow_trails`   | compute, per tick | records where every particle is in its trail     |
-//! | draw      | `flow_draw`     | render, per frame | draws every trail whole, as one ribbon per particle |
-//! | composite | `flow_composite`| render, per frame | stretches the trail image onto the screen         |
+//! | draw      | `flow_draw`     | render, when the sim moved | draws every trail whole into the back trail buffer, one ribbon per particle |
+//! | composite | `flow_composite`| render, per frame | stretches the front trail buffer onto the screen  |
 //!
-//! Each particle has its own ring of recent positions, redrawn whole every frame at one opacity.
-//! So a strand fades as one piece, which an accumulating texture can't do: it doesn't know which
-//! particle drew a pixel.
+//! Each particle has its own ring of recent positions, redrawn whole at one opacity. So a strand
+//! fades as one piece, which an accumulating texture can't do: it doesn't know which particle drew
+//! a pixel.
+//!
+//! The trail image is ping-ponged between two buffers, A and B: a draw goes into the back one, and
+//! then the two swap. A frame with nothing new (paused, or no tick due) skips the simulation and
+//! the draw, and composites the last image again.
 //!
 //! The simulation ticks at a fixed 60 Hz, whatever the frame rate.
 
@@ -73,7 +77,7 @@ impl Pipelines {
         manager: &mut PipelineManager,
         surface_format: wgpu::TextureFormat,
     ) -> Result<Self, PipelineError> {
-        let mut compute = |label, module, entry_point| {
+        let mut create_compute_pipeline = |label, module, entry_point| {
             manager.create_compute_pipeline(
                 device,
                 &ComputePipelineDesc {
@@ -86,10 +90,11 @@ impl Pipelines {
                 },
             )
         };
-        let physics = compute("flow physics", "flow_physics", "csPhysics")?;
-        let lifetime = compute("flow lifetime", "flow_lifetime", "csLifetime")?;
-        let spawn = compute("flow spawn", "flow_lifetime", "csSpawn")?;
-        let trails = compute("flow trails", "flow_trails", "csTrails")?;
+
+        let physics = create_compute_pipeline("flow physics", "flow_physics", "csPhysics")?;
+        let lifetime = create_compute_pipeline("flow lifetime", "flow_lifetime", "csLifetime")?;
+        let spawn = create_compute_pipeline("flow spawn", "flow_lifetime", "csSpawn")?;
+        let trails = create_compute_pipeline("flow trails", "flow_trails", "csTrails")?;
 
         let draw = manager.create_render_pipeline(
             device,
@@ -120,7 +125,7 @@ impl Pipelines {
             },
         )?;
 
-        let mut composite = |label, format: wgpu::TextureFormat| {
+        let mut create_render_pipeline = |label, format: wgpu::TextureFormat| {
             manager.create_render_pipeline(
                 device,
                 &RenderPipelineDesc {
@@ -142,8 +147,8 @@ impl Pipelines {
                 },
             )
         };
-        let screen = composite("flow composite", surface_format)?;
-        let export = composite("flow export", EXPORT_FORMAT)?;
+        let screen = create_render_pipeline("flow composite", surface_format)?;
+        let export = create_render_pipeline("flow export", EXPORT_FORMAT)?;
 
         Ok(Self {
             physics,
@@ -229,31 +234,24 @@ impl Simulation {
     }
 }
 
-/// The trail image, at the size the image settings ask for, and the composite bind groups that show
-/// it.
-struct TrailTarget {
-    /// Texels.
-    size: [u32; 2],
-    /// The simulated area in logical pixels.
-    sim_size: [f32; 2],
-    /// Physical pixels per logical pixel, as the draw pass sees them.
-    pixel_scale: f32,
+/// One of the ping-pong textures holding the rendered image.
+struct RenderTexture {
     view: wgpu::TextureView,
     composite: PipelineBindGroups,
     composite_export: PipelineBindGroups,
 }
 
-impl TrailTarget {
+impl RenderTexture {
     fn create(
         device: &wgpu::Device,
         manager: &PipelineManager,
         ids: &Pipelines,
+        label: &str,
         size: [u32; 2],
-        sim_size: [f32; 2],
-        pixel_scale: f32,
+        sampler: &wgpu::Sampler,
     ) -> Result<Self, PipelineError> {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("flow trails"),
+            label: Some(label),
             size: wgpu::Extent3d {
                 width: size[0],
                 height: size[1],
@@ -267,6 +265,64 @@ impl TrailTarget {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let resources = HashMap::from([
+            ("trails", wgpu::BindingResource::TextureView(&view)),
+            ("trailSampler", wgpu::BindingResource::Sampler(sampler)),
+        ]);
+        let create_bind_grp = |id, label| {
+            manager
+                .render_pipeline(id)
+                .layout
+                .create_bind_groups(device, label, &resources)
+        };
+        let composite = create_bind_grp(ids.composite, "flow composite")?;
+        let composite_export = create_bind_grp(ids.composite_export, "flow export")?;
+
+        Ok(Self {
+            view,
+            composite,
+            composite_export,
+        })
+    }
+}
+
+/// Denotes what render texture holds the last finished image
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderTexturesCurrentTexture {
+    A,
+    B,
+}
+
+/// Ping-pong textures holding the rendered image.
+/// Both render textures alternate being rendered to and being drawn from.
+struct DoubleRenderTarget {
+    /// Size of an image render texture.
+    size: [u32; 2],
+    /// The simulated area in logical pixels that the image covers.
+    sim_size: [f32; 2],
+    /// Physical pixels per logical pixel, as the draw pass sees them.
+    pixel_scale: f32,
+
+    tex_a: RenderTexture,
+    tex_b: RenderTexture,
+
+    front: RenderTexturesCurrentTexture,
+    /// Holds whether something was drawn into the back render texture, requiring a swap to show it.
+    was_drawn: bool,
+    /// Holds whether anything has ever been drawn to the render target.
+    has_image: bool,
+}
+
+impl DoubleRenderTarget {
+    fn create(
+        device: &wgpu::Device,
+        manager: &PipelineManager,
+        ids: &Pipelines,
+        size: [u32; 2],
+        sim_size: [f32; 2],
+        pixel_scale: f32,
+    ) -> Result<Self, PipelineError> {
         // clamps at the edges, and blends linearly for the smooth filter
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("flow trails sampler"),
@@ -274,28 +330,52 @@ impl TrailTarget {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-
-        let resources = HashMap::from([
-            ("trails", wgpu::BindingResource::TextureView(&view)),
-            ("trailSampler", wgpu::BindingResource::Sampler(&sampler)),
-        ]);
-        let bind = |id, label| {
-            manager
-                .render_pipeline(id)
-                .layout
-                .create_bind_groups(device, label, &resources)
-        };
-        let composite = bind(ids.composite, "flow composite")?;
-        let composite_export = bind(ids.composite_export, "flow export")?;
+        let create_render_text =
+            |label| RenderTexture::create(device, manager, ids, label, size, &sampler);
 
         Ok(Self {
             size,
             sim_size,
             pixel_scale,
-            view,
-            composite,
-            composite_export,
+            tex_a: create_render_text("flow trails a")?,
+            tex_b: create_render_text("flow trails b")?,
+            front: RenderTexturesCurrentTexture::A,
+            was_drawn: false,
+            has_image: false,
         })
+    }
+
+    /// The last finished image.
+    fn front_texture(&self) -> &RenderTexture {
+        match self.front {
+            RenderTexturesCurrentTexture::A => &self.tex_a,
+            RenderTexturesCurrentTexture::B => &self.tex_b,
+        }
+    }
+
+    /// Returns the texture to draw into, and marks that it was drawn into.
+    /// The next swap will show that texture. If nothing is drawn, the last finished image is shown again.
+    fn back_texture_mut(&mut self) -> &mut RenderTexture {
+        self.was_drawn = true;
+        match self.front {
+            RenderTexturesCurrentTexture::A => &mut self.tex_b,
+            RenderTexturesCurrentTexture::B => &mut self.tex_a,
+        }
+    }
+
+    /// Swaps the front and back textures, so the last finished image is shown. Does nothing unless
+    /// the back texture was drawn into since the last swap: the front texture is shown again.
+    fn swap(&mut self) {
+        if !self.was_drawn {
+            return;
+        }
+
+        self.front = match self.front {
+            RenderTexturesCurrentTexture::A => RenderTexturesCurrentTexture::B,
+            RenderTexturesCurrentTexture::B => RenderTexturesCurrentTexture::A,
+        };
+        self.was_drawn = false;
+        self.has_image = true;
     }
 }
 
@@ -311,13 +391,19 @@ pub struct FlowFieldSimulation {
     /// Longest texture side the device takes. Caps the render scale.
     max_side: u32,
 
+    /// Pipeline IDs
     ids: Pipelines,
+
+    /// Buffer holding the flow parameters as a GPU uniform. Updated when `params` changes
     params_buffer: wgpu::Buffer,
+    /// Buffer holding the perlin noise permutation table
     perm_buffer: wgpu::Buffer,
     /// The seed that `perm_buffer` was built from.
     perm_seed: u32,
     sim: Simulation,
-    target: TrailTarget,
+
+    /// Ping-pong textures holding the rendered image. The back texture is drawn into, and then the
+    target: DoubleRenderTarget,
 
     surface_format: wgpu::TextureFormat,
 
@@ -359,6 +445,7 @@ impl FlowFieldSimulation {
 
         let capacity = params.trail_capacity();
         let count = affordable_count(device, &params, capacity);
+        
         let sim = Simulation::allocate(
             device,
             manager,
@@ -368,7 +455,8 @@ impl FlowFieldSimulation {
             count,
             capacity,
         )?;
-        let target = TrailTarget::create(
+
+        let target = DoubleRenderTarget::create(
             device,
             manager,
             &ids,
@@ -455,21 +543,24 @@ impl FlowFieldSimulation {
         let sim_size = self.image.sim_size();
         let size = self.image.target_size(self.max_side);
         let pixel_scale = self.image.pixel_scale(self.max_side);
+
         if sim_size != self.target.sim_size {
             self.reset_pending = true;
         }
+
         if size != self.target.size
             || pixel_scale != self.target.pixel_scale
             || sim_size != self.target.sim_size
         {
             self.target =
-                TrailTarget::create(device, manager, &self.ids, size, sim_size, pixel_scale)
+                DoubleRenderTarget::create(device, manager, &self.ids, size, sim_size, pixel_scale)
                     .unwrap_or_else(|err| panic!("Failed to build the flow trail target: {err}"));
         }
 
         if self.params.noise_seed != self.perm_seed {
             let perm = perlin::permutation(self.params.noise_seed);
             queue.write_buffer(&self.perm_buffer, 0, bytemuck::cast_slice(&perm));
+
             self.perm_seed = self.params.noise_seed;
         }
 
@@ -487,20 +578,27 @@ impl FlowFieldSimulation {
         surface: &wgpu::TextureView,
     ) {
         let ticks = self.advance_clock(dt);
-
-        let gpu_params = self.params.to_gpu(
-            self.target.sim_size,
-            self.target.pixel_scale,
-            self.sim.count,
-            self.sim.capacity,
-        );
-        queue.write_buffer(&self.params_buffer, 0, &gpu_params.as_uniform_bytes());
+        let should_redraw = ticks > 0 || self.reset_pending || !self.target.has_image;
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("flow encoder"),
         });
-        self.record_simulation(manager, &mut encoder, ticks);
-        self.record_draw(manager, &mut encoder, gpu_params.trail_window);
+
+        if should_redraw {
+            let gpu_params = self.params.to_gpu(
+                self.target.sim_size,
+                self.target.pixel_scale,
+                self.sim.count,
+                self.sim.capacity,
+            );
+            queue.write_buffer(&self.params_buffer, 0, &gpu_params.as_uniform_bytes());
+
+            self.record_simulation(manager, &mut encoder, ticks);
+            self.record_draw(manager, &mut encoder, gpu_params.trail_window);
+        }
+
+        // only swaps if the back texture was drawn, otherwise the last image is shown again
+        self.target.swap();
         self.record_composite(manager, &mut encoder, surface);
         queue.submit([encoder.finish()]);
 
@@ -509,7 +607,7 @@ impl FlowFieldSimulation {
                 device,
                 queue,
                 manager.render_pipeline(self.ids.composite_export),
-                &self.target.composite_export,
+                &self.target.front_texture().composite_export,
                 self.target.size,
             );
         }
@@ -526,10 +624,12 @@ impl FlowFieldSimulation {
         if !self.params.paused {
             self.tick_debt += dt * TICKS_PER_SECOND * self.params.time_scale;
         }
+
         // epsilon: a 60 Hz display would otherwise alternate between 0 and 2 ticks
         let due = (self.tick_debt + 1e-3).floor().max(0.0) as u32;
         let ticks = due.min(MAX_TICKS_PER_FRAME);
         self.tick_debt -= ticks as f32;
+
         if due > MAX_TICKS_PER_FRAME {
             // a stall is dropped, not caught up on
             self.tick_debt = 0.0;
@@ -561,7 +661,7 @@ impl FlowFieldSimulation {
         });
 
         // wgpu puts barriers between dispatches, so each pass sees the one before's writes.
-        if std::mem::take(&mut self.reset_pending) {
+        if self.reset_pending {
             self.tick = self.tick.wrapping_add(1);
             pass.set_pipeline(&spawn.pipeline);
             for (set, group) in self.sim.spawn.sets() {
@@ -576,6 +676,7 @@ impl FlowFieldSimulation {
                 pass.set_bind_group(set, group, &[]);
             }
             pass.dispatch_workgroups(groups(trails), 1, 1);
+            self.reset_pending = false;
         }
 
         for _ in 0..ticks {
@@ -588,6 +689,7 @@ impl FlowFieldSimulation {
             } else {
                 (0.0, 0) // 0: the static 2D field
             };
+
             pass.set_pipeline(&physics.pipeline);
             for (set, group) in self.sim.physics.sets() {
                 pass.set_bind_group(set, group, &[]);
@@ -611,16 +713,17 @@ impl FlowFieldSimulation {
     }
 
     fn record_draw(
-        &self,
+        &mut self,
         manager: &PipelineManager,
         encoder: &mut wgpu::CommandEncoder,
         trail_window: u32,
     ) {
         let [r, g, b] = self.params.background.map(|c| f64::from(c) / 255.0);
+        let back = self.target.back_texture_mut();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("flow draw"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.target.view,
+                view: &back.view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -631,6 +734,7 @@ impl FlowFieldSimulation {
             })],
             ..Default::default()
         });
+
         pass.set_pipeline(&manager.render_pipeline(self.ids.draw).pipeline);
         for (set, group) in self.sim.draw.sets() {
             pass.set_bind_group(set, group, &[]);
@@ -658,10 +762,12 @@ impl FlowFieldSimulation {
             })],
             ..Default::default()
         });
+
         pass.set_pipeline(&manager.render_pipeline(self.ids.composite).pipeline);
-        for (set, group) in self.target.composite.sets() {
+        for (set, group) in self.target.front_texture().composite.sets() {
             pass.set_bind_group(set, group, &[]);
         }
+
         // sRGB surfaces encode on write, so the composite decodes first
         let push = CompositePush {
             decode_srgb: u32::from(self.surface_format.is_srgb()),
