@@ -17,7 +17,9 @@
 //! then the two swap. A frame with nothing new (paused, or no tick due) skips the simulation and
 //! the draw, and composites the last image again.
 //!
-//! The simulation ticks at a fixed 60 Hz, whatever the frame rate.
+//! The simulation ticks at a fixed 60 Hz, whatever the frame rate. A video render steps it by one
+//! video frame per frame instead, so the video is smooth however slow the window runs (see
+//! [`export`], which also saves still images).
 
 mod export;
 mod params;
@@ -30,6 +32,8 @@ mod tests;
 use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
+
+use export::{ExportFrame, Exporter};
 
 use crate::gfx::{
     ComputePipeline, ComputePipelineDesc, ComputePipelineId, PipelineBindGroups, PipelineError,
@@ -407,8 +411,10 @@ pub struct FlowFieldSimulation {
     tick_debt: f32,
     /// Where morphing is in its loop, 0..1.
     morph_phase: f32,
+    /// Whether a simulation reset was requested on previous frame
     reset_pending: bool,
-    export: export::Exporter,
+    /// Everything that gets finished images out of the simulation: the PNG saver and the video recorder.
+    exporters: Vec<Box<dyn Exporter>>,
 }
 
 impl FlowFieldSimulation {
@@ -477,8 +483,23 @@ impl FlowFieldSimulation {
             tick_debt: 0.0,
             morph_phase: 0.0,
             reset_pending: true,
-            export: export::Exporter::default(),
+            exporters: vec![
+                Box::new(export::ImageExporter::default()),
+                Box::new(export::VideoExporter::default()),
+            ],
         })
+    }
+
+    /// Whether an exporter has taken over the clock, so the simulation can't be paused.
+    fn is_recording(&self) -> bool {
+        self.exporters
+            .iter()
+            .any(|exporter| exporter.fixed_dt().is_some())
+    }
+
+    /// Whether any exporter has a job under way.
+    fn is_exporting(&self) -> bool {
+        self.exporters.iter().any(|exporter| exporter.is_busy())
     }
 
     /// Bytes of GPU memory that the particles and their trails take.
@@ -487,13 +508,8 @@ impl FlowFieldSimulation {
     }
 
     /// Respawns every particle at the next frame.
-    pub fn request_reset(&mut self) {
+    pub fn request_simulation_reset(&mut self) {
         self.reset_pending = true;
-    }
-
-    /// Saves the image at the next frame as a PNG, at the resolution of the image.
-    pub fn request_export(&mut self) {
-        self.export.request();
     }
 
     /// Records the window's size and scale factor, for "match window". The image takes them too
@@ -534,21 +550,31 @@ impl FlowFieldSimulation {
             self.reset_pending = true;
         }
 
-        let sim_size = self.image.sim_size();
-        let size = self.image.target_size(self.max_side);
-        let pixel_scale = self.image.pixel_scale(self.max_side);
+        // the frames of a video all have the size that the render started at, so a new image size
+        // waits in `self.image` until the frames are captured
+        if !self.is_exporting() {
+            let sim_size = self.image.sim_size();
+            let size = self.image.target_size(self.max_side);
+            let pixel_scale = self.image.pixel_scale(self.max_side);
 
-        if sim_size != self.target.sim_size {
-            self.reset_pending = true;
-        }
+            if sim_size != self.target.sim_size {
+                self.reset_pending = true;
+            }
 
-        if size != self.target.size
-            || pixel_scale != self.target.pixel_scale
-            || sim_size != self.target.sim_size
-        {
-            self.target =
-                DoubleRenderTarget::create(device, manager, &self.ids, size, sim_size, pixel_scale)
-                    .unwrap_or_else(|err| panic!("Failed to build the flow trail target: {err}"));
+            if size != self.target.size
+                || pixel_scale != self.target.pixel_scale
+                || sim_size != self.target.sim_size
+            {
+                self.target = DoubleRenderTarget::create(
+                    device,
+                    manager,
+                    &self.ids,
+                    size,
+                    sim_size,
+                    pixel_scale,
+                )
+                .unwrap_or_else(|err| panic!("Failed to build the flow trail target: {err}"));
+            }
         }
 
         if self.params.noise_seed != self.perm_seed {
@@ -558,7 +584,9 @@ impl FlowFieldSimulation {
             self.perm_seed = self.params.noise_seed;
         }
 
-        self.export.poll();
+        for exporter in &mut self.exporters {
+            exporter.poll();
+        }
     }
 
     /// Steps the simulation by `dt` seconds, draws, and composites onto `surface`, at any size. The
@@ -571,7 +599,23 @@ impl FlowFieldSimulation {
         dt: f32,
         surface: &wgpu::TextureView,
     ) {
-        let ticks = self.advance_clock(dt);
+        // a video render steps by exactly one frame of the video, whatever the real frame rate is
+        let fixed_dt = self
+            .exporters
+            .iter()
+            .find_map(|exporter| exporter.fixed_dt());
+        let sim_dt = match fixed_dt {
+            Some(fixed) => {
+                if self.exporters.iter().any(|exporter| exporter.is_armed()) {
+                    self.tick_debt = 0.0; // the first frame starts on a whole tick
+                }
+                self.params.paused = false;
+                fixed
+            }
+            None => dt,
+        };
+        self.track_fps(dt);
+        let ticks = self.advance_clock(sim_dt);
         let should_redraw = ticks > 0 || self.reset_pending || !self.target.has_image;
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -596,23 +640,30 @@ impl FlowFieldSimulation {
         self.record_composite(manager, &mut encoder, surface);
         queue.submit([encoder.finish()]);
 
-        if self.export.take_request() {
-            self.export.start(
-                device,
-                queue,
-                &self.target.front_texture().texture,
-                self.target.size,
-            );
+        let export_frame = ExportFrame {
+            device,
+            queue,
+            texture: &self.target.front_texture().texture,
+            size: self.target.size,
+        };
+        for exporter in &mut self.exporters {
+            exporter.on_frame(&export_frame);
+        }
+    }
+
+    /// Updates the frame rate readout from the time the last frame really took, which a video
+    /// render's fixed step doesn't tell.
+    fn track_fps(&mut self, real_dt: f32) {
+        let real_dt = real_dt.clamp(0.0, 0.25);
+        if real_dt > 0.0 {
+            // smoothed for display
+            self.stats.fps += (1.0 / real_dt - self.stats.fps) * 0.05;
         }
     }
 
     /// Ticks to run this frame.
     fn advance_clock(&mut self, dt: f32) -> u32 {
         let dt = dt.clamp(0.0, 0.25);
-        if dt > 0.0 {
-            // smoothed for display
-            self.stats.fps += (1.0 / dt - self.stats.fps) * 0.05;
-        }
 
         if !self.params.paused {
             self.tick_debt += dt * TICKS_PER_SECOND * self.params.time_scale;

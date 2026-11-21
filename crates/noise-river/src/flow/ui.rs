@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::ops::RangeInclusive;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::containers::menu::{MenuButton, MenuConfig};
 use egui::{Align, Layout, PopupCloseBehavior, Slider, Ui};
@@ -14,6 +14,7 @@ use egui_material_icons::{
 
 use super::{
     FlowFieldSimulation, FlowParams, MAX_PALETTE_STOPS, MAX_PALETTES, Palette, Range, ScaleFilter,
+    export::{ExportUiContext, timestamped_path},
     palette_presets,
 };
 
@@ -28,7 +29,7 @@ pub(super) enum SettingsSection {
 }
 
 /// Formats a string with a material icon codepoint a label string
-fn icon_label(icon: MaterialIcon, label: &str) -> String {
+pub(super) fn icon_label(icon: MaterialIcon, label: &str) -> String {
     format!("{}  {}", icon.codepoint, label)
 }
 
@@ -57,6 +58,8 @@ impl SettingsSection {
 pub struct FlowFieldSimulationUIState {
     /// Which settings sections have their window open.
     open_sections: HashSet<SettingsSection>,
+    /// The ids of the exporters whose window is open.
+    open_exporters: HashSet<&'static str>,
     /// The size the image settings' fields show before "apply".
     image_draft: [u32; 2],
     /// The `image.size` that the draft was last synced to.
@@ -66,12 +69,28 @@ pub struct FlowFieldSimulationUIState {
 }
 
 impl FlowFieldSimulationUIState {
+    /// Opens every settings window, for tests that draw them.
+    #[cfg(test)]
+    pub(super) fn open_all_sections(&mut self, sim: &FlowFieldSimulation) {
+        self.open_sections.extend(SettingsSection::ALL);
+        self.open_exporters.extend(
+            sim.exporters
+                .iter()
+                .filter(|exporter| exporter.window().is_some())
+                .map(|exporter| exporter.id()),
+        );
+    }
+
     /// The menu bar and the open settings windows. Edits apply from the next frame.
     pub fn update_ui(&mut self, ui: &mut Ui, sim: &mut FlowFieldSimulation) {
         self.sync_draft_img_size(sim.image.size);
 
+        // a video render runs the simulation on its own clock, so it can't be paused
+        let recording = sim.is_recording();
+
         // not while typing in a text field
-        if !ui.ctx().egui_wants_keyboard_input()
+        if !recording
+            && !ui.ctx().egui_wants_keyboard_input()
             && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space))
         {
             sim.params.paused = !sim.params.paused;
@@ -79,6 +98,7 @@ impl FlowFieldSimulationUIState {
 
         let frame =
             egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 12));
+
         egui::Panel::top("menu bar").frame(frame).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 self.sim_controls(ui, sim);
@@ -92,6 +112,72 @@ impl FlowFieldSimulationUIState {
         for (index, section) in SettingsSection::ALL.into_iter().enumerate() {
             self.section_window(&ctx, sim, section, index);
         }
+
+        self.exporter_windows(&ctx, sim);
+    }
+
+    /// The windows of the exporters that have one, opened from the export menu.
+    fn exporter_windows(&mut self, ctx: &egui::Context, sim: &mut FlowFieldSimulation) {
+        let FlowFieldSimulation {
+            exporters,
+            params,
+            target,
+            ..
+        } = sim;
+
+        let export_ctx = ExportUiContext {
+            params: &*params,
+            image_size: target.size,
+        };
+
+        let mut index = SettingsSection::ALL.len();
+        for exporter in exporters.iter_mut() {
+            let Some(window) = exporter.window() else {
+                continue;
+            };
+
+            let id = exporter.id();
+            let mut open = self.open_exporters.contains(id);
+            let offset = 24.0 * index as f32;
+            index += 1;
+
+            egui::Window::new(&window.title)
+                .id(egui::Id::new(id))
+                .open(&mut open)
+                .default_pos([16.0 + offset, 48.0 + offset])
+                .default_width(window.width)
+                .show(ctx, |ui| exporter.window_ui(ui, &export_ctx));
+
+            if !open {
+                self.open_exporters.remove(id);
+            }
+        }
+    }
+
+    /// The export button, with a popover that holds the entry of every exporter.
+    fn draw_export_menu(&mut self, ui: &mut Ui, sim: &mut FlowFieldSimulation) {
+        let FlowFieldSimulation {
+            exporters,
+            params,
+            target,
+            ..
+        } = sim;
+        let export_ctx = ExportUiContext {
+            params: &*params,
+            image_size: target.size,
+        };
+
+        ui.menu_button(icon_label(ICON_DOWNLOAD, "export"), |ui| {
+            for exporter in exporters.iter_mut() {
+                let id = exporter.id();
+                let mut open = self.open_exporters.contains(id);
+
+                exporter.menu_ui(ui, &export_ctx, &mut open);
+                if open {
+                    self.open_exporters.insert(id);
+                }
+            }
+        });
     }
 
     /// Syncs draft image size to current image size in sim state
@@ -108,9 +194,11 @@ impl FlowFieldSimulationUIState {
         } else {
             (ICON_PAUSE, "pause", "Pauses the simulation.")
         };
+        let recording = sim.is_recording();
         if ui
-            .button(icon_label(icon, text))
+            .add_enabled(!recording, egui::Button::new(icon_label(icon, text)))
             .on_hover_text(hover)
+            .on_disabled_hover_text("A video render is running, and it can't be paused.")
             .clicked()
         {
             sim.params.paused = !sim.params.paused;
@@ -130,31 +218,24 @@ impl FlowFieldSimulationUIState {
             .on_hover_text("Starts every particle over at a random spot.")
             .clicked()
         {
-            sim.request_reset();
+            sim.request_simulation_reset();
         }
-        let saving = sim.export.is_saving();
-        if ui
-            .add_enabled(
-                !saving,
-                egui::Button::new(icon_label(ICON_DOWNLOAD, "save image")),
-            )
-            .on_hover_text(
-                "Saves the image as a PNG in the working directory, at the resolution of the \
-                 image.",
-            )
-            .clicked()
-        {
-            sim.request_export();
-        }
+
+        self.draw_export_menu(ui, sim);
 
         ui.separator();
         let [width, height] = sim.target.size;
-        let hover = format!(
+        let mut hover = format!(
             "At {:.2}x, with {} particles taking {:.1} MiB. Click to change the image.",
             sim.target.pixel_scale,
             sim.sim.count,
             sim.memory_bytes() as f32 / (1024.0 * 1024.0),
         );
+
+        if recording {
+            hover.push_str(" The size is locked while a video renders.");
+        }
+
         // the controls are edited in place, so only a click outside closes the popover
         let config = MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
         let (response, _) =
@@ -171,8 +252,10 @@ impl FlowFieldSimulationUIState {
             ui.colored_label(ui.visuals().warn_fg_color, ICON_WARNING.codepoint)
                 .on_hover_text(particle_limit_warning(sim));
         }
-        if let Some(status) = sim.export.get_status_text() {
-            ui.weak(status);
+        for exporter in &sim.exporters {
+            if let Some(status) = exporter.bar_status() {
+                ui.weak(status);
+            }
         }
     }
 
@@ -221,6 +304,7 @@ impl FlowFieldSimulationUIState {
         let window_size = sim.window_size;
         let window_density = sim.window_density;
         let draft = &mut self.image_draft;
+        let recording = sim.is_recording();
         let image = &mut sim.image;
 
         ui.label(
@@ -231,70 +315,81 @@ impl FlowFieldSimulationUIState {
         ui.separator();
         ui.add_space(5.0);
 
-        // sim image size controls
-        ui.label(
-            egui::RichText::new(icon_label(icons::ICON_IMAGE, "Simulation image size"))
-                .strong()
-                .size(14.0)
-                .color(ui.visuals().weak_text_color()),
-        );
-        ui.add_space(1.0);
+        if recording {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                icon_label(
+                    icons::ICON_LOCK,
+                    "Sim resolution is locked while a video renders.",
+                ),
+            );
+        }
 
-        ui.checkbox(
-            &mut image.follow_window,
-            "Automatically resize to window size",
-        )
-        .on_hover_text(
-            "Keeps the image at the window's size and scale. The particles start over when \
+        ui.add_enabled_ui(!recording, |ui| {
+            // sim image size controls
+            ui.label(
+                egui::RichText::new(icon_label(icons::ICON_IMAGE, "Simulation image size"))
+                    .strong()
+                    .size(14.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
+            ui.add_space(1.0);
+
+            ui.checkbox(
+                &mut image.follow_window,
+                "Automatically resize to window size",
+            )
+            .on_hover_text(
+                "Keeps the image at the window's size and scale. The particles start over when \
                  the window resizes.",
-        );
-        ui.add_space(2.0);
-        ui.add_enabled_ui(!image.follow_window, |ui| {
-            ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut draft[0]).range(MIN_SIDE..=max_side))
-                    .on_hover_text("Width of the simulated image, in physical pixels.");
-                ui.label("x");
-                ui.add(egui::DragValue::new(&mut draft[1]).range(MIN_SIDE..=max_side))
-                    .on_hover_text("Height of the simulated image, in physical pixels.");
-                ui.label("px");
-            });
-            ui.horizontal(|ui| {
-                let changed = *draft != image.size;
-                if ui
-                    .add_enabled(
-                        changed,
-                        egui::Button::new(icon_label(icons::ICON_CHECK, "apply")),
-                    )
-                    .on_hover_text(
-                        "Rebuilds the simulation at this size. The particles start over, since \
+            );
+            ui.add_space(2.0);
+            ui.add_enabled_ui(!image.follow_window, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut draft[0]).range(MIN_SIDE..=max_side))
+                        .on_hover_text("Width of the simulated image, in physical pixels.");
+                    ui.label("x");
+                    ui.add(egui::DragValue::new(&mut draft[1]).range(MIN_SIDE..=max_side))
+                        .on_hover_text("Height of the simulated image, in physical pixels.");
+                    ui.label("px");
+                });
+                ui.horizontal(|ui| {
+                    let changed = *draft != image.size;
+                    if ui
+                        .add_enabled(
+                            changed,
+                            egui::Button::new(icon_label(icons::ICON_CHECK, "apply")),
+                        )
+                        .on_hover_text(
+                            "Rebuilds the simulation at this size. The particles start over, since \
                          their area changed.",
-                    )
-                    .clicked()
-                {
-                    image.size = *draft;
-                }
-                if ui
-                    .button(icon_label(icons::ICON_ASPECT_RATIO, "match window's size"))
-                    .on_hover_text("Takes the window's size and scale, and applies them.")
-                    .clicked()
-                {
-                    // the draft follows on the next frame
-                    image.size = window_size;
-                    image.density = window_density;
-                }
+                        )
+                        .clicked()
+                    {
+                        image.size = *draft;
+                    }
+                    if ui
+                        .button(icon_label(icons::ICON_ASPECT_RATIO, "match window's size"))
+                        .on_hover_text("Takes the window's size and scale, and applies them.")
+                        .clicked()
+                    {
+                        // the draft follows on the next frame
+                        image.size = window_size;
+                        image.density = window_density;
+                    }
+                });
             });
-        });
 
-        ui.add_space(10.0);
-        ui.label(
-            egui::RichText::new(icon_label(icons::ICON_MAGNIFICATION_LARGE, "Render scale"))
-                .strong()
-                .size(14.0)
-                .color(ui.visuals().weak_text_color()),
-        );
-        ui.add_space(1.0);
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new(icon_label(icons::ICON_MAGNIFICATION_LARGE, "Render scale"))
+                    .strong()
+                    .size(14.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
+            ui.add_space(1.0);
 
-        ui.add(
+            ui.add(
             Slider::new(&mut image.render_scale, 0.25..=4.0)
                 .logarithmic(true)
                 .text("render scale"),
@@ -303,33 +398,34 @@ impl FlowFieldSimulationUIState {
             "Multiplies the pixels of the image. The composition stays the same, so a higher scale \
              is sharper and a lower one is cheaper.",
         );
-        let [width, height] = image.target_size(max_side);
-        ui.label(icon_label(
-            icons::ICON_ARROW_RIGHT_ALT,
-            &format!("Scaled final image size: {width}x{height} px"),
-        ));
-        let effective = image.effective_scale(max_side);
-        if effective < image.render_scale {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                format!(
-                    "capped at {effective:.2}x, the GPU can't make a bigger texture than \
+            let [width, height] = image.target_size(max_side);
+            ui.label(icon_label(
+                icons::ICON_ARROW_RIGHT_ALT,
+                &format!("Scaled final image size: {width}x{height} px"),
+            ));
+            let effective = image.effective_scale(max_side);
+            if effective < image.render_scale {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!(
+                        "capped at {effective:.2}x, the GPU can't make a bigger texture than \
                      {max_side} px on a side."
-                ),
-            );
-        }
+                    ),
+                );
+            }
 
-        ui.horizontal(|ui| {
-            ui.label("scaling");
-            ui.radio_value(&mut image.filter, ScaleFilter::Nearest, "nearest")
-                .on_hover_text(
-                    "Hard-edged pixels, crisp when enlarging and grainy when shrinking.",
-                );
-            ui.radio_value(&mut image.filter, ScaleFilter::Smooth, "smooth")
-                .on_hover_text(
-                    "Blends pixels when enlarging, and averages them when shrinking, so fine \
+            ui.horizontal(|ui| {
+                ui.label("scaling");
+                ui.radio_value(&mut image.filter, ScaleFilter::Nearest, "nearest")
+                    .on_hover_text(
+                        "Hard-edged pixels, crisp when enlarging and grainy when shrinking.",
+                    );
+                ui.radio_value(&mut image.filter, ScaleFilter::Smooth, "smooth")
+                    .on_hover_text(
+                        "Blends pixels when enlarging, and averages them when shrinking, so fine \
                      strands don't shimmer.",
-                );
+                    );
+            });
         });
     }
 }
@@ -368,7 +464,7 @@ fn preset_controls(ui: &mut Ui, sim: &mut FlowFieldSimulation, status: &mut Opti
             .button(icon_label(ICON_SAVE, "save preset…"))
             .on_hover_text("Saves the settings to a JSON file.")
             .clicked()
-            && let Some(path) = pick_save_path()
+            && let Some(path) = pick_preset_save_path()
         {
             *status = Some(match sim.params.save_preset(&path) {
                 Ok(()) => format!("saved to {}", path.display()),
@@ -386,7 +482,7 @@ fn preset_controls(ui: &mut Ui, sim: &mut FlowFieldSimulation, status: &mut Opti
                 Ok(mut params) => {
                     params.paused = sim.params.paused;
                     sim.params = params;
-                    sim.request_reset();
+                    sim.request_simulation_reset();
                     format!("loaded {}", path.display())
                 }
                 Err(error) => format!("couldn't load: {error}"),
@@ -399,16 +495,37 @@ fn preset_controls(ui: &mut Ui, sim: &mut FlowFieldSimulation, status: &mut Opti
     }
 }
 
+/// Asks where to save a file of `extension`, offering `default_name`. A name that the user typed
+/// without an extension gets it added. `None` if the dialog was cancelled.
+fn pick_save_path(filter: &str, extension: &str, default_name: &str) -> Option<PathBuf> {
+    let mut path = rfd::FileDialog::new()
+        .add_filter(filter, &[extension])
+        .set_file_name(default_name)
+        .save_file()?;
+    if path.extension().is_none() {
+        path.set_extension(extension);
+    }
+    Some(path)
+}
+
+/// Asks where to save an export. The name offered is the time stamped one.
+pub(super) fn pick_export_path(filter: &str, prefix: &str, extension: &str) -> Option<PathBuf> {
+    let default = timestamped_path(Path::new(""), prefix, extension);
+    let name = default.to_string_lossy();
+    pick_save_path(filter, extension, &name)
+}
+
 /// Asks where to save a preset. `None` if the dialog was cancelled.
-fn pick_save_path() -> Option<PathBuf> {
+fn pick_preset_save_path() -> Option<PathBuf> {
     let timestamp_seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    rfd::FileDialog::new()
-        .add_filter("preset", &["json"])
-        .set_file_name(format!("preset_{timestamp_seconds}.json"))
-        .save_file()
+    pick_save_path(
+        "preset",
+        "json",
+        &format!("preset_{timestamp_seconds}.json"),
+    )
 }
 
 /// Asks for a preset file. `None` if the dialog was cancelled.
@@ -531,7 +648,7 @@ fn field_controls(ui: &mut Ui, params: &mut FlowParams) {
 }
 
 /// A small heading that sets off a group of controls inside a section.
-fn subheader(ui: &mut Ui, icon: MaterialIcon, label: &str) {
+pub(super) fn subheader(ui: &mut Ui, icon: MaterialIcon, label: &str) {
     ui.label(
         egui::RichText::new(icon_label(icon, label))
             .strong()

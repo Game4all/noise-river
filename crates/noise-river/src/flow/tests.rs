@@ -4,6 +4,7 @@
 //! Set `FLOW_TEST_PNG_DIR` to write what the render tests draw there.
 
 use std::{
+    any::Any,
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
@@ -263,7 +264,7 @@ fn a_reset_gives_every_particle_a_trail_at_its_spawn_point() {
         return;
     };
     harness.step(1);
-    harness.field.request_reset();
+    harness.field.request_simulation_reset();
     harness.field.params.paused = true;
     harness.step(1);
 
@@ -863,31 +864,34 @@ fn the_export_button_saves_a_png_in_the_background() {
         .unwrap()
         .join("flow-test-exports");
     fs::create_dir_all(&dir).unwrap();
-    harness.field.export.dir = dir.clone();
+    image_mut(&mut harness.field).dir = dir.clone();
     harness.step(60);
 
-    harness.field.request_export();
+    image_mut(&mut harness.field).request();
     harness.step(1); // the frame starts the readback and the save thread
     assert!(!matches!(
-        harness.field.export.state,
-        super::export::ExportJobState::Idle
+        image(&harness.field).status(),
+        export::ExportStatus::Idle
     ));
 
     // a second click while saving is ignored
-    harness.field.request_export();
+    image_mut(&mut harness.field).request();
 
     let started = std::time::Instant::now();
-    while harness.field.export.is_saving() {
+    while image(&harness.field).is_busy() {
         assert!(
             started.elapsed().as_secs() < 30,
             "the export never finished"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
-        harness.field.export.poll();
+        image_mut(&mut harness.field).poll();
     }
 
-    let super::export::ExportJobState::Saved(saved) = &harness.field.export.state else {
-        panic!("the export says: {:?}", harness.field.export.get_status_text());
+    let export::ExportStatus::Saved(saved) = image(&harness.field).status() else {
+        panic!(
+            "the export says: {:?}",
+            image(&harness.field).get_status_text()
+        );
     };
     assert_eq!(saved.parent(), Some(dir.as_path()));
 
@@ -898,4 +902,444 @@ fn the_export_button_saves_a_png_in_the_background() {
         (SIZE[0], SIZE[1])
     );
     fs::remove_file(saved).unwrap();
+}
+
+#[test]
+fn an_image_export_goes_to_the_chosen_file() {
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    let chosen = export_dir().join("chosen-image.png");
+    image_mut(&mut harness.field).path = Some(chosen.clone());
+    harness.step(10);
+
+    image_mut(&mut harness.field).request();
+    harness.step(1);
+
+    let started = std::time::Instant::now();
+    while image(&harness.field).is_busy() {
+        assert!(
+            started.elapsed().as_secs() < 30,
+            "the export never finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        image_mut(&mut harness.field).poll();
+    }
+
+    let export::ExportStatus::Saved(saved) = image(&harness.field).status() else {
+        panic!(
+            "the export says: {:?}",
+            image(&harness.field).get_status_text()
+        );
+    };
+    assert_eq!(saved, &chosen);
+    assert!(chosen.exists());
+    // the choice is for one export only
+    assert!(image(&harness.field).path.is_none());
+    fs::remove_file(&chosen).unwrap();
+}
+
+#[test]
+fn a_video_render_goes_to_the_chosen_file() {
+    let settings = export::VideoExportSettings {
+        loop_seconds: 0.5,
+        crossfade_seconds: 0.0,
+        fps: export::VideoFps::Fps30,
+        quality: export::VideoQuality::Medium,
+    };
+    let Some(mut harness) = video_harness(settings) else {
+        return;
+    };
+    let chosen = export_dir().join("chosen-video.mp4");
+    video_mut(&mut harness.field).path = Some(chosen.clone());
+
+    video_mut(&mut harness.field).request();
+    harness.step(settings.input_frames());
+    wait_for_video(&mut harness);
+
+    let export::ExportStatus::Saved(saved) = video(&harness.field).status() else {
+        panic!(
+            "the render says: {:?}",
+            video(&harness.field).get_status_text()
+        );
+    };
+    assert_eq!(saved, &chosen);
+    assert!(chosen.exists());
+    // the choice is for one render only
+    assert!(video(&harness.field).path.is_none());
+    fs::remove_file(&chosen).unwrap();
+}
+
+/// The exporter of type `T`, if the simulation has one.
+fn get_exporter<T: Exporter>(field: &FlowFieldSimulation) -> Option<&T> {
+    field
+        .exporters
+        .iter()
+        .find_map(|exporter| (&**exporter as &dyn Any).downcast_ref())
+}
+
+/// The exporter of type `T`, if the simulation has one.
+fn get_exporter_mut<T: Exporter>(field: &mut FlowFieldSimulation) -> Option<&mut T> {
+    field
+        .exporters
+        .iter_mut()
+        .find_map(|exporter| (&mut **exporter as &mut dyn Any).downcast_mut())
+}
+
+/// The image exporter of the simulation.
+fn image(field: &FlowFieldSimulation) -> &export::ImageExporter {
+    get_exporter(field).expect("an image exporter")
+}
+
+fn image_mut(field: &mut FlowFieldSimulation) -> &mut export::ImageExporter {
+    get_exporter_mut(field).expect("an image exporter")
+}
+
+/// The video exporter of the simulation.
+fn video(field: &FlowFieldSimulation) -> &export::VideoExporter {
+    get_exporter(field).expect("a video exporter")
+}
+
+fn video_mut(field: &mut FlowFieldSimulation) -> &mut export::VideoExporter {
+    get_exporter_mut(field).expect("a video exporter")
+}
+
+/// Where the tests write their files, which they clean up.
+fn export_dir() -> PathBuf {
+    let dir = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("flow-test-exports");
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// A video render asked for, and a few frames in.
+fn video_harness(settings: export::VideoExportSettings) -> Option<Harness> {
+    // odd sides, so the video is cropped, and the rows need padding
+    let mut harness = Harness::with_format(wgpu::TextureFormat::Rgba8Unorm, [301, 201], 1.0)?;
+    harness.field.image.follow_window = false;
+    video_mut(&mut harness.field).dir = export_dir();
+    video_mut(&mut harness.field).settings = settings;
+    harness.step(30); // so there are strands to see
+    Some(harness)
+}
+
+/// Runs until the render is no longer busy.
+fn wait_for_video(harness: &mut Harness) {
+    let started = std::time::Instant::now();
+    while video(&harness.field).is_busy() {
+        assert!(
+            started.elapsed().as_secs() < 120,
+            "the render never finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        video_mut(&mut harness.field).poll();
+    }
+}
+
+fn mp4_details(path: &Path) -> (u32, [u16; 2], u32) {
+    let file = fs::File::open(path).unwrap();
+    let len = file.metadata().unwrap().len();
+    let reader = mp4::Mp4Reader::read_header(std::io::BufReader::new(file), len).unwrap();
+    let track = reader.tracks().values().next().expect("a video track");
+    (
+        track.sample_count(),
+        [track.width(), track.height()],
+        track.timescale(),
+    )
+}
+
+#[test]
+fn a_video_render_writes_a_looping_mp4_on_its_own_clock() {
+    let settings = export::VideoExportSettings {
+        loop_seconds: 0.5,      // 15 frames
+        crossfade_seconds: 0.2, // 6 of them blended
+        fps: export::VideoFps::Fps30,
+        quality: export::VideoQuality::Medium,
+    };
+    let Some(mut harness) = video_harness(settings) else {
+        return;
+    };
+    let (loop_frames, input_frames) = (settings.loop_frames(), settings.input_frames());
+    assert_eq!((loop_frames, input_frames), (15, 21));
+
+    let tick_before = harness.field.tick;
+    harness.field.params.paused = true; // a render plays on
+    video_mut(&mut harness.field).request();
+    assert!(video(&harness.field).is_busy());
+
+    // the harness steps by 1/60 s, a render by 1/30 s: two ticks a frame
+    for rendered in 1..=input_frames {
+        harness.step(1);
+        assert_eq!(
+            harness.field.tick - tick_before,
+            2 * rendered,
+            "frame {rendered} steps the simulation by the video's frame, not the clock's"
+        );
+    }
+    assert!(!harness.field.params.paused);
+    // all rendered: the simulation is back on the real clock
+    assert!(video(&harness.field).fixed_dt().is_none());
+
+    wait_for_video(&mut harness);
+    let export::ExportStatus::Saved(path) = video(&harness.field).status() else {
+        panic!(
+            "the render says: {:?}",
+            video(&harness.field).get_status_text()
+        );
+    };
+    let path = path.clone();
+
+    let (samples, size, timescale) = mp4_details(&path);
+    assert_eq!(samples, loop_frames);
+    assert_eq!(size, [300, 200], "cropped to even sides");
+    assert_eq!(timescale / 1000, 30);
+
+    let file_bytes = fs::metadata(&path).unwrap().len();
+    let stats = video(&harness.field).finished_stats().unwrap();
+    assert_eq!(stats.encoded_frames, input_frames);
+    assert_eq!(stats.written_frames, loop_frames);
+    eprintln!(
+        "{} frames, {} bytes, {:.2} Mbit/s, aimed at {:.2}",
+        samples,
+        file_bytes,
+        file_bytes as f64 * 8.0 / 0.5 / 1e6,
+        f64::from(settings.bitrate([300, 200])) / 1e6,
+    );
+    fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn a_render_can_be_cancelled_and_leaves_the_simulation_free() {
+    let Some(mut harness) = video_harness(export::VideoExportSettings::default()) else {
+        return;
+    };
+    video_mut(&mut harness.field).request();
+    harness.step(3);
+    assert!(video(&harness.field).fixed_dt().is_some());
+    assert!(video(&harness.field).stats().unwrap().rendered_frames >= 3);
+
+    video_mut(&mut harness.field).cancel();
+    assert!(matches!(
+        video(&harness.field).status(),
+        export::ExportStatus::Cancelled
+    ));
+    assert!(video(&harness.field).fixed_dt().is_none());
+    assert!(!video(&harness.field).is_busy());
+
+    // and another can follow
+    video_mut(&mut harness.field).request();
+    assert!(video(&harness.field).is_busy());
+    video_mut(&mut harness.field).cancel();
+}
+
+#[test]
+fn the_image_size_is_locked_while_a_render_records() {
+    let settings = export::VideoExportSettings {
+        loop_seconds: 0.5,
+        crossfade_seconds: 0.0,
+        fps: export::VideoFps::Fps30,
+        quality: export::VideoQuality::Medium,
+    };
+    let Some(mut harness) = video_harness(settings) else {
+        return;
+    };
+    let locked_size = harness.field.target.size;
+    // not the timestamped name, which tests that render in the same second would share
+    let chosen = export_dir().join("locked-size.mp4");
+    video_mut(&mut harness.field).path = Some(chosen.clone());
+    video_mut(&mut harness.field).request();
+    harness.step(2);
+    assert!(video(&harness.field).is_busy());
+
+    // a new size from the settings, and a window that the image follows
+    harness.field.image.size = [400, 200];
+    harness.field.image.follow_window = true;
+    harness.field.set_window([500, 300], 1.0);
+    harness.step(1);
+    assert!(video(&harness.field).is_busy());
+    assert_eq!(harness.field.target.size, locked_size);
+
+    harness.step(settings.input_frames() - 3);
+    wait_for_video(&mut harness);
+    assert!(matches!(
+        video(&harness.field).status(),
+        export::ExportStatus::Saved(_)
+    ));
+    assert_eq!(harness.field.target.size, locked_size);
+    fs::remove_file(&chosen).unwrap();
+
+    // once the frames are captured, the image takes the size that waited
+    harness.step(1);
+    assert_eq!(harness.field.target.size, [500, 300]);
+}
+
+#[test]
+fn a_render_doesnt_get_in_the_way_of_saving_an_image() {
+    let Some(mut harness) = video_harness(export::VideoExportSettings::default()) else {
+        return;
+    };
+    image_mut(&mut harness.field).dir = export_dir();
+    video_mut(&mut harness.field).request();
+    harness.step(2);
+
+    image_mut(&mut harness.field).request();
+    harness.step(1);
+    let started = std::time::Instant::now();
+    while image(&harness.field).is_busy() {
+        assert!(started.elapsed().as_secs() < 30, "the image never saved");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        image_mut(&mut harness.field).poll();
+    }
+    let export::ExportStatus::Saved(png) = image(&harness.field).status() else {
+        panic!("it says {:?}", image(&harness.field).get_status_text());
+    };
+    fs::remove_file(png).unwrap();
+    assert!(video(&harness.field).is_busy(), "the render goes on");
+    video_mut(&mut harness.field).cancel();
+}
+
+/// An egui context set up like the app's, with the icon font.
+fn egui_context() -> egui::Context {
+    let ctx = egui::Context::default();
+    egui_material_icons::initialize(&ctx);
+    ctx
+}
+
+/// Runs one egui pass. Nothing renders it, so its texture changes are dropped.
+fn run_egui(ctx: &egui::Context, input: egui::RawInput, content: impl FnMut(&mut egui::Ui)) {
+    ctx.run_ui(input, content).textures_delta.clear();
+}
+
+/// Draws the controls for a few frames, so the windows and popups get their sizes.
+fn draw_ui(
+    ctx: &egui::Context,
+    ui_state: &mut FlowFieldSimulationUIState,
+    field: &mut FlowFieldSimulation,
+) {
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+    for _ in 0..3 {
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        run_egui(ctx, input, |ui| ui_state.update_ui(ui, field));
+    }
+}
+
+#[test]
+fn the_render_window_draws_in_every_state() {
+    let Some(mut harness) = video_harness(export::VideoExportSettings::default()) else {
+        return;
+    };
+    let ctx = egui_context();
+    let mut ui_state = FlowFieldSimulationUIState::default();
+    ui_state.open_all_sections(&harness.field);
+
+    // idle: the window shows the settings
+    draw_ui(&ctx, &mut ui_state, &mut harness.field);
+    assert!(matches!(
+        video(&harness.field).status(),
+        export::ExportStatus::Idle
+    ));
+
+    // the warnings that depend on the field and the window
+    for (morph, follow_window, loop_seconds) in
+        [(true, true, 7.0), (true, false, 20.0), (false, false, 3.0)]
+    {
+        harness.field.params.morph = morph;
+        harness.field.image.follow_window = follow_window;
+        video_mut(&mut harness.field).settings.loop_seconds = loop_seconds;
+        draw_ui(&ctx, &mut ui_state, &mut harness.field);
+    }
+
+    // a settings change that puts the crossfade out of bounds is pulled back in
+    video_mut(&mut harness.field).settings.loop_seconds = 2.0;
+    video_mut(&mut harness.field).settings.crossfade_seconds = 30.0;
+    draw_ui(&ctx, &mut ui_state, &mut harness.field);
+    assert_eq!(video(&harness.field).settings.crossfade_seconds, 1.0);
+
+    // recording
+    video_mut(&mut harness.field).settings.loop_seconds = 1.0;
+    video_mut(&mut harness.field).settings.crossfade_seconds = 0.2;
+    video_mut(&mut harness.field).request();
+    draw_ui(&ctx, &mut ui_state, &mut harness.field); // armed
+    harness.step(5);
+    draw_ui(&ctx, &mut ui_state, &mut harness.field);
+    assert!(
+        video(&harness.field).is_busy(),
+        "the progress shows while rendering"
+    );
+
+    // finishing
+    let input_frames = video(&harness.field).settings.input_frames();
+    harness.step(input_frames - 5);
+    draw_ui(&ctx, &mut ui_state, &mut harness.field);
+    assert!(video(&harness.field).is_busy());
+
+    // saved, then dismissed
+    wait_for_video(&mut harness);
+    draw_ui(&ctx, &mut ui_state, &mut harness.field);
+    let export::ExportStatus::Saved(path) = video(&harness.field).status() else {
+        panic!("it says {:?}", video(&harness.field).get_status_text());
+    };
+    fs::remove_file(path).unwrap();
+    video_mut(&mut harness.field).dismiss();
+    draw_ui(&ctx, &mut ui_state, &mut harness.field);
+    assert!(
+        matches!(video(&harness.field).status(), export::ExportStatus::Idle),
+        "the settings are back once dismissed"
+    );
+
+    // failed and cancelled
+    video_mut(&mut harness.field).fail("it broke");
+    draw_ui(&ctx, &mut ui_state, &mut harness.field);
+    assert!(matches!(
+        video(&harness.field).status(),
+        export::ExportStatus::Failed(_)
+    ));
+    video_mut(&mut harness.field).dismiss();
+
+    video_mut(&mut harness.field).request();
+    harness.step(2);
+    video_mut(&mut harness.field).cancel();
+    draw_ui(&ctx, &mut ui_state, &mut harness.field);
+    assert!(matches!(
+        video(&harness.field).status(),
+        export::ExportStatus::Cancelled
+    ));
+}
+
+#[test]
+fn a_render_cant_be_paused() {
+    let Some(mut harness) = video_harness(export::VideoExportSettings::default()) else {
+        return;
+    };
+    video_mut(&mut harness.field).request();
+    harness.step(2);
+    assert!(video(&harness.field).fixed_dt().is_some());
+
+    // the space key is how the UI pauses
+    let ctx = egui_context();
+    let mut ui_state = FlowFieldSimulationUIState::default();
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(800.0, 600.0),
+        )),
+        events: vec![egui::Event::Key {
+            key: egui::Key::Space,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
+    };
+    let field = &mut harness.field;
+    run_egui(&ctx, input, |ui| ui_state.update_ui(ui, field));
+    assert!(!harness.field.params.paused);
+    video_mut(&mut harness.field).cancel();
 }
