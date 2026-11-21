@@ -100,7 +100,7 @@ impl Harness {
 
     /// The surface, read back as rgba8. Its format is whatever the harness made it.
     fn surface_pixels(&self) -> Vec<u8> {
-        export::read_rgba8(&self.device, &self.queue, &self.surface, SIZE).unwrap()
+        export::read_texels(&self.device, &self.queue, &self.surface, SIZE, 4).unwrap()
     }
 
     /// The trail image, as rgba8 in gamma space, whatever the surface format is.
@@ -108,9 +108,7 @@ impl Harness {
         export::capture(
             &self.device,
             &self.queue,
-            self.manager
-                .render_pipeline(self.field.ids.composite_export),
-            &self.field.target.front_texture().composite_export,
+            &self.field.target.front_texture().texture,
             self.field.target.size,
         )
         .unwrap()
@@ -610,7 +608,7 @@ fn a_srgb_surface_shows_the_same_colors_as_the_image() {
 
     // the composite decodes for the sRGB surface, so reading it back gives the image's bytes
     let surface =
-        export::read_rgba8(&harness.device, &harness.queue, &harness.surface, SIZE).unwrap();
+        export::read_texels(&harness.device, &harness.queue, &harness.surface, SIZE, 4).unwrap();
     for texel in texels(&surface).iter() {
         for channel in 0..3 {
             assert!(
@@ -870,7 +868,10 @@ fn the_export_button_saves_a_png_in_the_background() {
 
     harness.field.request_export();
     harness.step(1); // the frame starts the readback and the save thread
-    assert!(harness.field.export.is_saving() || harness.field.export.status.is_some());
+    assert!(!matches!(
+        harness.field.export.state,
+        super::export::ExportJobState::Idle
+    ));
 
     // a second click while saving is ignored
     harness.field.request_export();
@@ -885,11 +886,9 @@ fn the_export_button_saves_a_png_in_the_background() {
         harness.field.export.poll();
     }
 
-    let status = harness.field.export.status.clone().unwrap();
-    let saved = status
-        .strip_prefix("saved ")
-        .unwrap_or_else(|| panic!("the export says: {status}"));
-    let saved = Path::new(saved);
+    let super::export::ExportJobState::Saved(saved) = &harness.field.export.state else {
+        panic!("the export says: {:?}", harness.field.export.get_status_text());
+    };
     assert_eq!(saved.parent(), Some(dir.as_path()));
 
     let decoder = png::Decoder::new(std::io::BufReader::new(fs::File::open(saved).unwrap()));

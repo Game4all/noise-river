@@ -1498,6 +1498,7 @@ dependencies = [
  "egui-winit",
  "egui_material_icons",
  "encase",
+ "half",
  "png",
  "pollster 1.0.1",
  "rfd",

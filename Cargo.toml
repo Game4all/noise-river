@@ -24,6 +24,7 @@ bytemuck = { version = "1", features = ["derive"] }
 encase = "0.13"
 png = "0.18"
 rfd = "0.17"
+half = "2"
 rust-embed = { version = "8.13", features = ["interpolate-folder-path", "debug-embed"] }
 
 slang-shady = { path = "crates/slang-shady" }

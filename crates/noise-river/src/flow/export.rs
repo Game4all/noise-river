@@ -1,6 +1,6 @@
-//! Saves the trail image as a PNG at its own resolution. The composite runs again into an
-//! `Rgba8Unorm` target, which holds gamma encoded values, so the bytes are PNG ready. The readback
-//! waits for the GPU once. Encoding and the file write run on another thread.
+//! Saves the trail image as a PNG at its own resolution. It copies the front trail texture, which
+//! holds gamma encoded half floats converted to RGBA8. The readback
+//! waits for the GPU once. Encoding and the file write run on another thread to not freeze the application.
 
 use std::{
     fs::File,
@@ -11,19 +11,26 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::{CompositePush, EXPORT_FORMAT};
-use crate::gfx::{PipelineBindGroups, RenderPipeline};
+type Outcome = Result<PathBuf, Box<dyn std::error::Error + Send + Sync>>;
 
-type Outcome = Result<PathBuf, String>;
+/// Last state of the exporter job.
+#[derive(Default)]
+pub(super) enum ExportJobState {
+    #[default]
+    Idle,
+    Saving,
+    Saved(PathBuf),
+    Failed(Box<dyn std::error::Error + Send + Sync>),
+}
 
 #[derive(Default)]
 pub struct Exporter {
     /// Output directory. Empty means the working directory.
     pub dir: PathBuf,
     requested: bool,
-    saving: Option<mpsc::Receiver<Outcome>>,
-    /// What became of the last export, for the UI.
-    pub status: Option<String>,
+    save_result_channel: Option<mpsc::Receiver<Outcome>>,
+    /// What became of the last export.
+    pub(super) state: ExportJobState,
 }
 
 impl Exporter {
@@ -36,26 +43,34 @@ impl Exporter {
     }
 
     pub fn is_saving(&self) -> bool {
-        self.saving.is_some()
+        self.save_result_channel.is_some()
+    }
+
+    /// The state of the last export as text for the UI, if there was one.
+    pub fn get_status_text(&self) -> Option<String> {
+        match &self.state {
+            ExportJobState::Idle => None,
+            ExportJobState::Saving => Some("saving...".to_owned()),
+            ExportJobState::Saved(path) => Some(format!("saved {} to disk", path.display())),
+            ExportJobState::Failed(err) => Some(format!("export failed: {err}")),
+        }
     }
 
     /// Takes the writer thread's result once it is ready.
     pub fn poll(&mut self) {
-        let Some(saving) = &self.saving else {
+        let Some(saving) = &self.save_result_channel else {
             return;
         };
         let outcome = match saving.try_recv() {
             Ok(outcome) => outcome,
             Err(mpsc::TryRecvError::Empty) => return,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Err("the thread that saves it died".to_owned())
-            }
+            Err(mpsc::TryRecvError::Disconnected) => Err("the thread that saves it died".into()),
         };
-        self.saving = None;
-        self.status = Some(match outcome {
-            Ok(path) => format!("saved {}", path.display()),
-            Err(err) => format!("export failed: {err}"),
-        });
+        self.save_result_channel = None;
+        self.state = match outcome {
+            Ok(path) => ExportJobState::Saved(path),
+            Err(err) => ExportJobState::Failed(err),
+        };
     }
 
     /// Reads the image back, then saves it in the background.
@@ -63,98 +78,67 @@ impl Exporter {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        pipeline: &RenderPipeline,
-        composite: &PipelineBindGroups,
+        texture: &wgpu::Texture,
         size: [u32; 2],
     ) {
         if self.is_saving() {
             return; // one at a time
         }
-        match capture(device, queue, pipeline, composite, size) {
+        match capture(device, queue, texture, size) {
             Ok(pixels) => {
                 let (send, receive) = mpsc::channel();
-                self.saving = Some(receive);
-                self.status = Some("saving...".to_owned());
+                self.save_result_channel = Some(receive);
+                self.state = ExportJobState::Saving;
                 let dir = self.dir.clone();
                 thread::spawn(move || {
                     let _ = send.send(save(&dir, size, &pixels));
                 });
             }
-            Err(err) => self.status = Some(format!("export failed: {err}")),
+            Err(err) => self.state = ExportJobState::Failed(err.into()),
         }
     }
 }
 
-/// Renders the composite into an `Rgba8Unorm` texture and reads it back as tightly packed rgba8.
+/// Reads the trail texture (`Rgba16Float`, gamma encoded) back as tightly packed rgba8. The values
+/// are already what a PNG holds, so they are only narrowed, with alpha forced opaque.
 pub(super) fn capture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    pipeline: &RenderPipeline,
-    composite: &PipelineBindGroups,
-    size: [u32; 2],
-) -> Result<Vec<u8>, String> {
-    let [width, height] = size;
-    let extent = wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-    };
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("flow export"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: EXPORT_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("flow export encoder"),
-    });
-    {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("flow export"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
-        pass.set_pipeline(&pipeline.pipeline);
-        for (set, group) in composite.sets() {
-            pass.set_bind_group(set, group, &[]);
-        }
-        // the target isn't sRGB, and the image is copied 1:1, so no decode and no filter
-        let push = CompositePush {
-            decode_srgb: 0,
-            smooth_filter: 0,
-        };
-        pass.set_immediates(0, &push.as_immediate_bytes());
-        pass.draw(0..3, 0..1);
-    }
-    queue.submit([encoder.finish()]);
-
-    read_rgba8(device, queue, &texture, size)
-}
-
-/// Reads back a 4 bytes per texel texture as tightly packed rows. Needs `COPY_SRC`.
-pub(super) fn read_rgba8(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     size: [u32; 2],
 ) -> Result<Vec<u8>, String> {
+    const HALF_BYTES: usize = std::mem::size_of::<half::f16>();
+    const TEXEL_BYTES: usize = 4 * HALF_BYTES;
+
+    let texels = read_texels(device, queue, texture, size, TEXEL_BYTES as u32)?;
+
+    let to_byte = |half: [u8; HALF_BYTES]| {
+        let value = half::f16::from_le_bytes(half).to_f32();
+        (value.clamp(0.0, 1.0) * 255.0).round() as u8
+    };
+    let mut pixels = Vec::with_capacity(texels.len() / 2);
+    for texel in texels.as_chunks::<TEXEL_BYTES>().0 {
+        let [r, g, b, _] = *texel.as_chunks::<HALF_BYTES>().0 else {
+            unreachable!("a texel is four halves");
+        };
+
+        pixels.extend([to_byte(r), to_byte(g), to_byte(b), 255]);
+    }
+    Ok(pixels)
+}
+
+/// Reads back a texture as tightly packed rows, blocking until the GPU is done.s
+/// The target needs `COPY_SRC` usage flag else kaboom.
+pub(super) fn read_texels(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    size: [u32; 2],
+    bytes_per_texel: u32,
+) -> Result<Vec<u8>, String> {
     let [width, height] = size;
 
-    let row_bytes = width * 4;
+    let row_bytes = width * bytes_per_texel;
     let padded_row_bytes = row_bytes.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("flow export readback"),
@@ -193,24 +177,29 @@ pub(super) fn read_rgba8(
     buffer.map_async(wgpu::MapMode::Read, .., move |result| {
         let _ = send.send(result);
     });
+
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .map_err(|err| format!("waiting for the GPU: {err}"))?;
+
     receive
         .recv()
         .map_err(|_| "the GPU never answered".to_owned())?
         .map_err(|err| format!("mapping the readback buffer: {err}"))?;
 
-    let mut pixels = Vec::with_capacity(row_bytes as usize * height as usize);
-    {
+    let pixels = {
         let mapped = buffer
             .get_mapped_range(..)
             .map_err(|err| format!("reading the readback buffer: {err}"))?;
-        for row in mapped.chunks_exact(padded_row_bytes as usize) {
-            pixels.extend_from_slice(&row[..row_bytes as usize]);
-        }
-    }
+        // drop the padding at the end of each row
+        mapped
+            .chunks_exact(padded_row_bytes as usize)
+            .flat_map(|row| &row[..row_bytes as usize])
+            .copied()
+            .collect()
+    };
     buffer.unmap();
+
     Ok(pixels)
 }
 
@@ -225,16 +214,16 @@ fn save(dir: &Path, size: [u32; 2], rgba: &[u8]) -> Outcome {
 }
 
 pub(super) fn write_png(path: &Path, size: [u32; 2], rgba: &[u8]) -> Result<(), String> {
-    let file = File::create(path).map_err(|err| format!("{}: {err}", path.display()))?;
+    let fail = |err: &dyn std::fmt::Display| format!("{}: {err}", path.display());
+
+    let file = File::create(path).map_err(|err| fail(&err))?;
 
     let mut encoder = png::Encoder::new(BufWriter::new(file), size[0], size[1]);
     // opaque image, so no alpha
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
-    let mut writer = encoder
-        .write_header()
-        .map_err(|err| format!("{}: {err}", path.display()))?;
+    let mut writer = encoder.write_header().map_err(|err| fail(&err))?;
 
     let rgb: Vec<u8> = rgba
         .as_chunks::<4>()
@@ -242,7 +231,5 @@ pub(super) fn write_png(path: &Path, size: [u32; 2], rgba: &[u8]) -> Result<(), 
         .iter()
         .flat_map(|&[r, g, b, _]| [r, g, b])
         .collect();
-    writer
-        .write_image_data(&rgb)
-        .map_err(|err| format!("{}: {err}", path.display()))
+    writer.write_image_data(&rgb).map_err(|err| fail(&err))
 }

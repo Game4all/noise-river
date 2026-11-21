@@ -171,7 +171,7 @@ impl FlowFieldSimulationUIState {
             ui.colored_label(ui.visuals().warn_fg_color, ICON_WARNING.codepoint)
                 .on_hover_text(particle_limit_warning(sim));
         }
-        if let Some(status) = &sim.export.status {
+        if let Some(status) = sim.export.get_status_text() {
             ui.weak(status);
         }
     }

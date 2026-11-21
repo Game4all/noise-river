@@ -42,8 +42,6 @@ pub use ui::FlowFieldSimulationUIState;
 /// Strands blend here in gamma space, like a canvas. Half floats avoid the banding that 8 bits
 /// would show under many faint strokes.
 const TRAIL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// Export target, which a PNG holds as is.
-const EXPORT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Most ticks one frame catches up on. The rest of a stall is skipped.
 const MAX_TICKS_PER_FRAME: u32 = 8;
@@ -68,7 +66,6 @@ struct Pipelines {
     trails: ComputePipelineId,
     draw: RenderPipelineId,
     composite: RenderPipelineId,
-    composite_export: RenderPipelineId,
 }
 
 impl Pipelines {
@@ -125,30 +122,26 @@ impl Pipelines {
             },
         )?;
 
-        let mut create_render_pipeline = |label, format: wgpu::TextureFormat| {
-            manager.create_render_pipeline(
-                device,
-                &RenderPipelineDesc {
-                    label,
-                    vertex: ShaderRef {
-                        module: "flow_composite",
-                        entry_point: "vsFullscreen",
-                    },
-                    fragment: Some(ShaderRef {
-                        module: "flow_composite",
-                        entry_point: "fsComposite",
-                    }),
-                    vertex_buffers: None,
-                    color_targets: &[Some(format.into())],
-                    primitive: Default::default(),
-                    depth_stencil: None,
-                    multisample: Default::default(),
-                    binding_overrides: &[],
+        let composite = manager.create_render_pipeline(
+            device,
+            &RenderPipelineDesc {
+                label: "flow composite",
+                vertex: ShaderRef {
+                    module: "flow_composite",
+                    entry_point: "vsFullscreen",
                 },
-            )
-        };
-        let screen = create_render_pipeline("flow composite", surface_format)?;
-        let export = create_render_pipeline("flow export", EXPORT_FORMAT)?;
+                fragment: Some(ShaderRef {
+                    module: "flow_composite",
+                    entry_point: "fsComposite",
+                }),
+                vertex_buffers: None,
+                color_targets: &[Some(surface_format.into())],
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                binding_overrides: &[],
+            },
+        )?;
 
         Ok(Self {
             physics,
@@ -156,8 +149,7 @@ impl Pipelines {
             spawn,
             trails,
             draw,
-            composite: screen,
-            composite_export: export,
+            composite,
         })
     }
 }
@@ -236,9 +228,9 @@ impl Simulation {
 
 /// One of the ping-pong textures holding the rendered image.
 struct RenderTexture {
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
     composite: PipelineBindGroups,
-    composite_export: PipelineBindGroups,
 }
 
 impl RenderTexture {
@@ -261,7 +253,10 @@ impl RenderTexture {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: TRAIL_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            // COPY_SRC: the exporter reads the front texture back
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -277,12 +272,11 @@ impl RenderTexture {
                 .create_bind_groups(device, label, &resources)
         };
         let composite = create_bind_grp(ids.composite, "flow composite")?;
-        let composite_export = create_bind_grp(ids.composite_export, "flow export")?;
 
         Ok(Self {
+            texture,
             view,
             composite,
-            composite_export,
         })
     }
 }
@@ -445,7 +439,7 @@ impl FlowFieldSimulation {
 
         let capacity = params.trail_capacity();
         let count = affordable_count(device, &params, capacity);
-        
+
         let sim = Simulation::allocate(
             device,
             manager,
@@ -606,8 +600,7 @@ impl FlowFieldSimulation {
             self.export.start(
                 device,
                 queue,
-                manager.render_pipeline(self.ids.composite_export),
-                &self.target.front_texture().composite_export,
+                &self.target.front_texture().texture,
                 self.target.size,
             );
         }
